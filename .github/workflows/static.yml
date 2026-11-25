@@ -31,11 +31,25 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
+      - name: Prepare site
+        # Uniquement ce dont l'installeur a besoin (les sources des apps contiennent
+        # des liens symboliques cassés qui font échouer l'archivage).
+        run: |
+          mkdir -p _site/apps
+          cp -r index.html index.js index.css libs images firmware _site/
+          cp apps/apps.js apps/external.ld _site/apps/
+          for d in apps/*/; do
+            n=$(basename "$d")
+            [ -f "$d/app.elf" ] || continue
+            mkdir -p "_site/apps/$n"
+            cp "$d/app.elf" "_site/apps/$n/"
+            for f in app.icon icon.png; do [ -f "$d/$f" ] && cp "$d/$f" "_site/apps/$n/"; done
+          done
+          du -sh _site
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository
-          path: '.'
+          path: '_site'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
