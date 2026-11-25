@@ -2,6 +2,7 @@
 #include "giacPCH.h"
 #ifdef KHICAS
 #include "kdisplay.h"
+#include "kui.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -278,23 +279,23 @@ int finance(int mode,GIAC_CONTEXT){ // mode==-1 pret, 1 placement
   smallmenu.height=11;
   smallmenu.scrollbar=1;
   smallmenu.scrollout=1;
-  smallmenu.title = (char *) (mode==-1?"Pret bancaire":"Epargne");
+  smallmenu.title = (char *) (mode==-1?"Prêt bancaire":"Épargne");
   smallmenu.type = MENUTYPE_NO_NUMBER;
   while(1) {
     drawRectangle(0,0,LCD_WIDTH_PX,LCD_HEIGHT_PX,_WHITE);
     string pvs,fvs,pms;
     if (mode==-1){
-      pvs=((lang==1)?"Somme due actuelle ":"Present due amount ");
-      fvs=((lang==1)?"Somme due future ":"Future due amount "); 
-      pms=((lang==1)?"Mensualite ":"Payment ");
+      pvs=((lang==1)?"Somme due actuelle\t":"Present due amount\t");
+      fvs=((lang==1)?"Somme due future\t":"Future due amount\t"); 
+      pms=((lang==1)?"Mensualité\t":"Payment\t");
     } else {
-      pvs=((lang==1)?"Epargne actuelle ":"Present amount ");
-      fvs=((lang==1)?"Epargne future ":"Future amount ");
-      pms=((lang==1)?"Versement mensuel ":"Payment ");
+      pvs=((lang==1)?"Épargne actuelle\t":"Present amount\t");
+      fvs=((lang==1)?"Épargne future\t":"Future amount\t");
+      pms=((lang==1)?"Versement mensuel\t":"Payment\t");
     }
-    string irs=((lang==1)?"Taux d'interet annuel ":"Annual interest rate ");
-    string irpys=((lang==1)?"Paiements par an ":"Payments per year ");
-    string nbs=((lang==1)?"Nombre d'annees ":"Number of years ");
+    string irs=((lang==1)?"Taux d'intérêt annuel\t":"Annual interest rate\t");
+    string irpys=((lang==1)?"Paiements par an\t":"Payments per year\t");
+    string nbs=((lang==1)?"Nombre d'années\t":"Number of years\t");
     string pvs1=pvs+giac::print_DOUBLE_((-mode)*pv,contextptr),
       fvs1=fvs+giac::print_DOUBLE_((-mode)*fv,contextptr),
       irs1=irs+giac::print_DOUBLE_(ir,contextptr)+"%",
@@ -305,7 +306,13 @@ int finance(int mode,GIAC_CONTEXT){ // mode==-1 pret, 1 placement
     for (int i=0;i<6;i++)
       smallmenuitems[i].text = tab[i];
     smallmenuitems[6].text = (char*)((lang==1)?"Quitter ":"Quit ");
-    os_draw_string(0,200,solved?giac::_GREEN:giac::_MAGENTA,_WHITE,"Ans solve|EXE change|Tool help");
+    { // redesign : barre d'aide du menu finance
+      static const char * const hk[4]={"Ans","EXE",0,"Toolbox"};
+      static const char * const hlf[4]={"Résoudre","Modifier",0,"Aide"};
+      static const char * const hle[4]={"Solve","Change",0,"Help"};
+      kui::menu_hints(hk,lang==1?hlf:hle);
+      kui::status_mode("Finance");
+    }
     int sres = doMenu(&smallmenu);
     if (sres==MENU_RETURN_EXIT)
       break;
@@ -314,7 +321,7 @@ int finance(int mode,GIAC_CONTEXT){ // mode==-1 pret, 1 placement
       xcas::textArea text;
       text.editable=false;
       text.clipline=-1;
-      text.title = (char*)((lang==1)?(mode==-1?"Calcul d'un pret":"Interet d'un placement"):"Finance help");
+      text.title = (char*)((lang==1)?(mode==-1?"Calcul d'un prêt":"Intérêt d'un placement"):"Finance help");
       text.allowF1=true;
       text.python=python_compat(contextptr);
       std::vector<xcas::textElement> & elem=text.elements;
@@ -374,7 +381,8 @@ int finance(int mode,GIAC_CONTEXT){ // mode==-1 pret, 1 placement
       if (choix<2 && mode==1) d=-d;
       if (keynumber>=0)
 	d=keynumber;
-      if (!inputdouble(tab[choix],d,contextptr))
+      string lbl(tab[choix]); lbl=lbl.substr(0,lbl.find('\t')); // libellé sans la valeur
+      if (!inputdouble(lbl.c_str(),d,contextptr))
 	continue;
       if (choix<2 && mode==1) d=-d;
       if (choix==3){
@@ -412,12 +420,12 @@ int khicas_addins_menu(GIAC_CONTEXT){
   smallmenu.scrollbar=1;
   smallmenu.scrollout=1;
   smallmenuitems[0].text = (char*)((lang==1)?"Tableur":"Spreadsheet");
-  smallmenuitems[1].text = (char*)((lang==1)?"Table periodique":"Periodic table");
-  smallmenuitems[2].text = (char*)((lang==1)?"Pret":"Mortgage");
-  smallmenuitems[3].text = (char*)((lang==1)?"Epargne":"TVM");
-  smallmenuitems[4].text = (char*)((lang==1)?"Table caracteres":"Char table");
-  smallmenuitems[5].text = (char*)((lang==1)?"Exemple simple: Syracuse":"Simple example; Syracuse");
-  smallmenuitems[6].text = (char*)((lang==1)?"Exemple de jeu: Mastermind":"Game example: Mastermind");
+  smallmenuitems[1].text = (char*)((lang==1)?"Table périodique":"Periodic table");
+  smallmenuitems[2].text = (char*)((lang==1)?"Prêt":"Mortgage");
+  smallmenuitems[3].text = (char*)((lang==1)?"Épargne":"TVM");
+  smallmenuitems[4].text = (char*)((lang==1)?"Table des caractères":"Char table");
+  smallmenuitems[5].text = (char*)((lang==1)?"Exemple : Syracuse":"Simple example; Syracuse");
+  smallmenuitems[6].text = (char*)((lang==1)?"Jeu : Mastermind":"Game example: Mastermind");
   smallmenuitems[7].text = (char*)((lang==1)?"Fractale de Mandelbrot":"Mandelbrot fractal");
   // smallmenuitems[8].text = (char*)"Mon application"; // adjust numitem !
   // smallmenuitems[9].text = (char*)"Autre application";
@@ -430,6 +438,7 @@ int khicas_addins_menu(GIAC_CONTEXT){
   smallmenuitems[smallmenu.numitems-2].text = (char*)((lang==1)?"Quitter le menu":"Leave menu");
   smallmenuitems[smallmenu.numitems-1].text = (char*)((lang==1)?"Quitter KhiCAS":"Leave KhiCAS");
   while(1) {
+    kui::status_mode(lang==1?"Applications":"Applications");
     int sres = doMenu(&smallmenu);
     if(sres == MENU_RETURN_SELECTION || sres==KEY_CTRL_EXE) {
       if (smallmenu.selection==smallmenu.numitems){
@@ -842,18 +851,22 @@ bool sheet_display(tableur &t,GIAC_CONTEXT){
     swapint(sel_c,sel_C);
   bool has_cmd=t.cmd_row>=0 && t.cmd_row<t.nrows;
   waitforvblank();
-  drawRectangle(0,0,LCD_WIDTH_PX,row_height,_WHITE); // clear column indices row
+  drawRectangle(0,0,LCD_WIDTH_PX,row_height,kui::SURFACE2); // redesign : en-têtes de colonnes
   string s;
   if (has_sel)
     s=printsel(sel_r,sel_c,sel_R,sel_C);
   else
     s=printcell(t.cur_row,t.cur_col);
-  os_draw_string(2,1,_BLACK,_WHITE,s.c_str(),false);
+  { // référence de la cellule en pastille indigo
+    int w=kui::width(s.c_str(),kf_ui_9sb)+8;
+    kui::box(2,18+2,w,14,4,kui::PRIMARY,kui::PRIMARY,kui::SURFACE2);
+    kui::text(6,18+2,s.c_str(),kf_ui_9sb,kui::ON_ACCENT,kui::PRIMARY);
+  }
   int y=row_height;
   int x=col_width;
   int J=giacmin(t.ncols,t.disp_col_begin+disp_cols);
   for (int j=t.disp_col_begin;j<J;++j){
-    draw_line(x,0,x,row_height,_BLACK);
+    draw_line(x,0,x,row_height,kui::BORDER);
     char colname[3]="A"; 
     if (j>=26){ // if we accept more than 26 cols
       colname[0] += j/26;
@@ -862,7 +875,7 @@ bool sheet_display(tableur &t,GIAC_CONTEXT){
     }
     else
       colname[0] += (j % 26);
-    os_draw_string(x+col_width/2-4,2,_BLACK,_WHITE,colname);
+    { int w=kui::width(colname,kf_ui_11m); kui::text(x+(col_width+4-w)/2,18+1,colname,kf_ui_11m,kui::TEXT3,kui::SURFACE2); }
     x+=col_width+4;
   }
   int waitn=2;
@@ -871,7 +884,8 @@ bool sheet_display(tableur &t,GIAC_CONTEXT){
       waitforvblank();
     drawRectangle(0,y,LCD_WIDTH_PX,row_height,_WHITE); // clear current row
     // draw_line(0,y,LCD_WIDTH_PX,y,_BLACK);
-    os_draw_string(4,y,_BLACK,_WHITE,print_INT_(i).c_str()); // row number
+    drawRectangle(0,y,col_width,row_height,kui::SURFACE2); // numéro de ligne
+    { string rn=print_INT_(i); int w=kui::width(rn.c_str(),kf_ui_11m); kui::text((col_width-w)/2,y+18+1,rn.c_str(),kf_ui_11m,i==t.cur_row?kui::PRIMARY:kui::TEXT3,kui::SURFACE2); }
     gen g=t.m[i];
     if (g.type!=_VECT)
       return false;
@@ -880,7 +894,7 @@ bool sheet_display(tableur &t,GIAC_CONTEXT){
     J=giacmin(J,t.disp_col_begin+disp_cols);
     x=col_width;
     for (int j=t.disp_col_begin;j<J;++j){
-      draw_line(x,y,x,y+row_height,_BLACK);
+      draw_line(x,y,x,y+row_height,kui::BORDER);
       gen vj=v[j];
       if (vj.type<_IDNT)
 	vj=makevecteur(vj,vj,0);
@@ -893,7 +907,11 @@ bool sheet_display(tableur &t,GIAC_CONTEXT){
 	}
 	bool rev=has_sel?(sel_r<=i && i<=sel_R && sel_c<=j && j<=sel_C):iscur;
 	if (rev)
-	  drawRectangle(x+1,y,col_width+4,row_height,color_gris);	  
+	  drawRectangle(x+1,y,col_width+4,row_height,color_gris);
+	if (iscur && !has_sel){ // redesign : contour indigo
+	  drawRectangle(x+1,y,col_width+3,1,kui::PRIMARY); drawRectangle(x+1,y+row_height-1,col_width+3,1,kui::PRIMARY);
+	  drawRectangle(x+1,y,1,row_height,kui::PRIMARY); drawRectangle(x+col_width+3,y,1,row_height,kui::PRIMARY);
+	}	  
 	s=(*vj._VECTptr)[1].print(contextptr);
 	int dx=os_draw_string(0,0,0,0,s.c_str(),true); // find width
 	if (dx<col_width)
@@ -907,12 +925,12 @@ bool sheet_display(tableur &t,GIAC_CONTEXT){
       }
       x+=col_width+4;
     }
-    draw_line(0,y,LCD_WIDTH_PX,y,_BLACK);
+    draw_line(0,y,LCD_WIDTH_PX,y,kui::BORDER);
     y+=row_height;
   }
   waitforvblank();
   drawRectangle(0,y,LCD_WIDTH_PX,LCD_HEIGHT_PX-y,_WHITE); // clear cmdline
-  draw_line(0,y,LCD_WIDTH_PX,y,_BLACK);
+  draw_line(0,y,LCD_WIDTH_PX,y,kui::BORDER_STRONG);
   // commandline
   int p=python_compat(contextptr); python_compat(0,contextptr);
   int xpe=xcas_python_eval; xcas_python_eval=0;
@@ -959,9 +977,8 @@ bool sheet_display(tableur &t,GIAC_CONTEXT){
   python_compat(p,contextptr); xcas_python_eval=xpe;
   // fast menus
   string menu("shift-1 stat1d|2 2d|3 seq|4 edit|5 view|6 graph|7 R|8 list| ");
-  bg=65039;// bg=52832;
-  drawRectangle(0,205,LCD_WIDTH_PX,17,bg);
-  os_draw_string_small(0,205,_BLACK,bg,menu.c_str());
+  (void)bg;
+  kui::softkeys_from_legacy(menu.c_str(),false); // redesign
   return true;
 }
 

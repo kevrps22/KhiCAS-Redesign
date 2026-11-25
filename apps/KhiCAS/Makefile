@@ -2,7 +2,7 @@ API=../../api
 CC=arm-none-eabi-gcc
 OBJCOPY=arm-none-eabi-objcopy
 AR=arm-none-eabi-ar
-CFLAGS=-DNDEBUG -ggdb3 -I$(API) -Os -mcpu=cortex-m7 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard -fno-common -fdata-sections -ffunction-sections -fno-exceptions -fno-strict-aliasing -fno-common -fno-threadsafe-statics
+CFLAGS=-DNDEBUG -ggdb3 -I$(API) -Isrc/giac-1.6.0/src -Os -mcpu=cortex-m7 -mthumb -mfpu=fpv5-sp-d16 -mfloat-abi=hard -fno-common -fdata-sections -ffunction-sections -fno-exceptions -fno-strict-aliasing -fno-common -fno-threadsafe-statics
 LDFLAGS=-Wl,-L$(API) -Wl,--gc-sections -Wl,--entry=entrypoint --specs=nano.specs -nostartfiles -Wl,-Ur -lc -lstdc++ -lm -lapi -lnosys
 
 # Use the same shell for all the commands of a recipe. It applies to all the recipes of the Makefile.
@@ -11,7 +11,10 @@ LDFLAGS=-Wl,-L$(API) -Wl,--gc-sections -Wl,--entry=entrypoint --specs=nano.specs
 %.o: %.cpp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-app.elf: src/main.o src/lib/libgiac.a src/lib/libmpfi.a src/lib/libmpfr.a src/lib/libgmp.a src/lib/libmicropy.a
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+app.elf: src/main.o src/libc_stubs.o src/lib/libgiac.a src/lib/libmpfi.a src/lib/libmpfr.a src/lib/libgmp.a src/lib/libmicropy.a
 	$(CC) $^ -o $@ $(CFLAGS) $(LDFLAGS)
 
 libDirectory:

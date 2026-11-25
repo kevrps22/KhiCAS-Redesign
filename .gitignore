@@ -47,3 +47,4 @@ apps/Video/libjpeg-turbo/build
 **/libtool
 **/aclocal.m4
 .cache
+apps/KhiCAS/src/giac-1.6.0/src/simu/

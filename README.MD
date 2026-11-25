@@ -1,3 +1,11 @@
+# KhiCAS — Redesign (fork d'Upsilon-External)
+
+Ce fork contient une refonte complète de l'interface de **KhiCAS** : polices lissées, barres d'état
+et de raccourcis, menus, catalogue, graphes, tableaux de variation, applications…
+Tout est décrit dans [`redesign/`](redesign/README.md). L'`app.elf` compilé est aussi dans les releases.
+
+---
+
 # Epsilon
 
 The base firmware image is a fork of https://github.com/numworks/epsilon including

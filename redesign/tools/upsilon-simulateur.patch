@@ -1,0 +1,99 @@
+diff --git a/apps/external/app/sample.c b/apps/external/app/sample.c
+deleted file mode 100644
+index a779bf2..0000000
+--- a/apps/external/app/sample.c
++++ /dev/null
+@@ -1,15 +0,0 @@
+-#include <extapp_api.h>
+-
+-#if defined _FXCG || defined NSPIRE_NEWLIB
+-// On the port, we use the Built-in file manager to import files.
+-void host_filemanager();
+-void extapp_main() {
+-  host_filemanager();
+-}
+-#else
+-// Elsewhere, just draw a rectangle to test the extapp API.
+-void extapp_main() {
+-  extapp_pushRectUniform(10, 10, LCD_WIDTH-20, LCD_HEIGHT-20, 0);
+-  extapp_msleep(1000);
+-}
+-#endif
+diff --git a/apps/external/app/sources.mak b/apps/external/app/sources.mak
+index 3f285e2..e4e9d27 100644
+--- a/apps/external/app/sources.mak
++++ b/apps/external/app/sources.mak
+@@ -1,3 +1,7 @@
+-app_external_src += $(addprefix apps/external/app/,\
+-	sample.c \
++SFLAGS += -DSIMULATOR
++
++LDFLAGS += -no-pie -Wl,--allow-multiple-definition $(EXTAPP_PATH)/libgiac_simulator.a -lpthread -ldl -lpng -L/home/kevin/Documents/Projets/KhiCAS-redesign/app/hostdeps/inst/lib -lmpfi -lmpfr -lgmp
++
++app_external_src += $(addprefix $(EXTAPP_PATH)/,\
++	main.cpp \
+ )
+\ No newline at end of file
+diff --git a/ion/src/shared/events_keyboard.cpp b/ion/src/shared/events_keyboard.cpp
+index 3fe943f..8177d82 100644
+--- a/ion/src/shared/events_keyboard.cpp
++++ b/ion/src/shared/events_keyboard.cpp
+@@ -146,8 +146,12 @@ static Journal * sDestinationJournal = nullptr;
+ void replayFrom(Journal * l) { sSourceJournal = l; }
+ void logTo(Journal * l) { sDestinationJournal = l; }
+ 
++}
++namespace Simulator { namespace Actions { void shotHook(bool last); } }
++namespace Events {
+ Event getEvent(int * timeout) {
+   if (sSourceJournal != nullptr) {
++    Ion::Simulator::Actions::shotHook(sSourceJournal->isEmpty());
+     if (sSourceJournal->isEmpty()) {
+       sSourceJournal = nullptr;
+     } else {
+diff --git a/ion/src/simulator/shared/actions.cpp b/ion/src/simulator/shared/actions.cpp
+index ee8395f..4a7657b 100644
+--- a/ion/src/simulator/shared/actions.cpp
++++ b/ion/src/simulator/shared/actions.cpp
+@@ -1,3 +1,6 @@
++#include <stdlib.h>
++#include <stdio.h>
++#include <ion/timing.h>
+ #include "actions.h"
+ #include <ion/display.h>
+ #include "framebuffer.h"
+@@ -27,6 +30,17 @@ void loadState() {
+ }
+ #endif
+ 
++void shotHook(bool last) {
++  static int n = 0;
++  const char * pre = getenv("NW_SHOT");
++  if (!pre) return;
++  Ion::Timing::msleep(300);
++  char path[1024];
++  snprintf(path, sizeof(path), "%s_%03d.png", pre, n++);
++  Platform::saveImage(Framebuffer::address(), Display::Width, Display::Height, path);
++  if (last) exit(0);
++}
++
+ void takeScreenshot() {
+   const char * path = Platform::filePathForWriting("png");
+   if (path != nullptr) {
+diff --git a/ion/src/simulator/shared/main.cpp b/ion/src/simulator/shared/main.cpp
+index 2865f9f..8c50007 100644
+--- a/ion/src/simulator/shared/main.cpp
++++ b/ion/src/simulator/shared/main.cpp
+@@ -1,3 +1,4 @@
++#include "framebuffer.h"
+ #include "haptics.h"
+ #include "journal.h"
+ #include "platform.h"
+@@ -96,6 +97,7 @@ int main(int argc, char * argv[]) {
+   }
+ 
+   Random::init();
++  if (headless) { Framebuffer::setActive(true); }
+   if (!headless) {
+     bool screen_only = args.popFlag("--screen-only") || args.popFlag("-s");
+     bool fullscreen =  args.popFlag("--fullscreen")  || args.popFlag("-f");

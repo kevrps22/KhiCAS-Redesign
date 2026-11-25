@@ -15,6 +15,7 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+#include "kui.h"
 #include "config.h"
 #include "giacPCH.h"
 #if defined HAVE_UNISTD_H && !defined NUMWORKS
@@ -208,24 +209,38 @@ namespace giac {
     for (;;){
       col &= 0xf;
       if (row<0) row=5; else if (row>5) row=0;
-      // display table
-      drawRectangle(0,0,LCD_WIDTH_PX,LCD_HEIGHT_PX,_WHITE);
-      os_draw_string(0,0,_BLACK,_WHITE,lang==1?"Selectionner caractere":"Select char");
+      // Redesign : grille de caractères (Figma, écran 35)
+      using namespace kui;
+      fill(0,18,320,198,SURFACE);
+      status_mode(lang==1?"Caractères":"Characters");
+      int cur=32+16*row+col;
       for (int r=0;r<6;++r){
 	for (int c=0;c<16;++c){
-	  char buf[2]={char(32+16*r+c),0}; 
-	  os_draw_string(20*c,20+20*r,_BLACK,(r==row && c==col?color_gris:_WHITE),buf);
+	  char buf[2]={char(32+16*r+c),0};
+	  if (buf[0]==127) continue;
+	  int x=16+18*c, y=18+8+22*r;
+	  bool sel = r==row && c==col;
+	  if (sel) box(x,y,18,20,4,PRIMARY,PRIMARY,SURFACE);
+	  int w=width(buf,kf_mono_sm);
+	  text(x+(18-w)/2,y+3,buf,kf_mono_sm,sel?ON_ACCENT:TEXT,sel?PRIMARY:SURFACE);
 	}
       }
-      string s("Current ");
-      int cur=32+16*row+col;
-      s += char(cur);
-      s += " ";
-      s += print_INT_(cur);
-      s += " 0x";
-      s += hexa_print_INT_(cur);
-      os_draw_string(0,160,_BLACK,_WHITE,s.c_str());
-      os_draw_string(0,180,_BLACK,_WHITE,lang==1?"EXE: copier caractere":"EXE: copy char");
+      {
+	int y=18+8+22*6+6;
+	box(16,y,288,26,8,SURFACE,BORDER_STRONG,SURFACE);
+	char ch[2]={char(cur),0};
+	text(26,y+5,ch,kf_mono_l.cell?kf_ui_13sb:kf_ui_13sb,PRIMARY,SURFACE);
+	string hx=hexa_print_INT_(cur); if (hx.compare(0,2,"0x")!=0) hx="0x"+hx;
+	string info=string("code ")+print_INT_(cur)+"  ·  "+hx;
+	int w=width(info.c_str(),kf_ui_11m);
+	text(304-10-w,y+5,info.c_str(),kf_ui_11m,TEXT2,SURFACE);
+      }
+      {
+	static const char * const hk[4]={"OK","↑↓←→",0,"Back"};
+	static const char * const hl[4]={"Copier","Choisir",0,"Fermer"};
+	static const KeyType ht[4]={KEY_PRIMARY,KEY_PLAIN,KEY_PLAIN,KEY_PLAIN};
+	hints(hk,hl,ht);
+      }
       // interaction
       int key=getkey(1);
       if (key==KEY_CTRL_EXIT)
@@ -278,30 +293,82 @@ namespace giac {
     return clipboard()->c_str();
   }
   
-  int print_msg12(const char * msg1,const char * msg2,int textY=40){
-    drawRectangle(0, textY+10, LCD_WIDTH_PX, 44, COLOR_WHITE);
-    drawRectangle(3,textY+10,316,3, COLOR_BLACK);
-    drawRectangle(3,textY+10,3,44, COLOR_BLACK);
-    drawRectangle(316,textY+10,3,44, COLOR_BLACK);
-    drawRectangle(3,textY+54,316,3, COLOR_BLACK);
-    int textX=30;
-    if (msg1){
-      if (strlen(msg1)>=30)
-	os_draw_string_small_(textX,textY+15,msg1);
-      else
-	os_draw_string_(textX,textY+15,msg1);
+  // ---- Redesign : boîtes de dialogue ----
+  // Découpe « Titre? OK: oui, Back: annuler » en préfixe + actions [touche] libellé.
+  static int kdlg_actions(const char * s,string & prefix,string keys[4],string labels[4]){
+    static const char * const K[]={"OK","Back","EXE","enter","esc","AC","EXIT"};
+    string str(s?s:"");
+    int n=0; size_t pos=string::npos;
+    for (unsigned k=0;k<sizeof(K)/sizeof(K[0]);k++){
+      size_t p=str.find(string(K[k])+":");
+      if (p!=string::npos && (p==0 || str[p-1]==' ' || str[p-1]==',') && p<pos) pos=p;
     }
+    if (pos==string::npos) return 0;
+    prefix=str.substr(0,pos);
+    while (!prefix.empty() && (prefix[prefix.size()-1]==' ' || prefix[prefix.size()-1]==',')) prefix.erase(prefix.size()-1);
+    string rest=str.substr(pos);
+    while (!rest.empty() && n<4){
+      size_t c=rest.find(':'); if (c==string::npos) break;
+      string k=rest.substr(0,c);
+      size_t e=rest.find(',',c);
+      string l=rest.substr(c+1,e==string::npos?string::npos:e-c-1);
+      while (!k.empty() && k[0]==' ') k.erase(0,1);
+      while (!l.empty() && l[0]==' ') l.erase(0,1);
+      while (!l.empty() && l[l.size()-1]==' ') l.erase(l.size()-1);
+      if (k=="enter") k="EXE"; if (k=="esc") k="Back";
+      keys[n]=k; labels[n]=l; n++;
+      if (e==string::npos) break;
+      rest=rest.substr(e+1);
+    }
+    return n;
+  }
+  static bool kdlg_confirm=false;
+
+  int print_msg12(const char * msg1,const char * msg2,int textY=40){
+    using namespace kui;
+    const int OY=18;
+    if (kdlg_confirm){
+      string pre1,pre2,k[4],l[4],k2[4],l2[4];
+      int n=kdlg_actions(msg1,pre1,k,l);
+      int n2=n?0:kdlg_actions(msg2,pre2,k2,l2);
+      string title = n ? pre1 : string(msg1?msg1:"");
+      string body = n2 ? pre2 : string(msg2?msg2:"");
+      if (!n){ n=n2; for (int i=0;i<4;i++){ k[i]=k2[i]; l[i]=l2[i]; } }
+      if (title.empty()){ title=body; body=""; }
+      int h=12+18+(body.empty()?0:16)+22+8;
+      int y=textY+10+OY;
+      if (y+h>SOFTBAR_Y-4) y=SOFTBAR_Y-4-h;
+      box(14,y,292,h,12,SURFACE,BORDER_STRONG,SURFACE);
+      int ty=y+10;
+      text_clip(26,ty,title.c_str(),kf_ui_13sb,TEXT,SURFACE,296); ty+=18;
+      if (!body.empty()){ text_clip(26,ty,body.c_str(),kf_ui_10,TEXT2,SURFACE,296); ty+=16; }
+      int xr=294; ty+=4;
+      for (int i=n-1;i>=0;i--){
+        bool primary = k[i]=="OK" || k[i]=="EXE";
+        int w=keycap_width(k[i].c_str())+4+width(l[i].c_str(),kf_ui_10);
+        int x=keycap(xr-w,ty,k[i].c_str(),primary?KEY_PRIMARY:KEY_PLAIN,SURFACE);
+        text(x+4,ty,l[i].c_str(),kf_ui_10,TEXT2,SURFACE);
+        xr-=w+12;
+      }
+      return 26;
+    }
+    // champ de saisie (inputline) : mêmes positions qu'avant, cadre redessiné
+    drawRectangle(0, textY+10, LCD_WIDTH_PX, 47, COLOR_WHITE);
+    box(4,textY+10+OY,312,47,10,SURFACE,PRIMARY,SURFACE);
+    int textX=16;
+    if (msg1)
+      text_clip(textX,textY+14+OY,msg1,kf_ui_12m,TEXT,SURFACE,308);
     textX=10;
     textY+=33;
     if (msg2){
       if (strlen(msg2)>=30)
-	os_draw_string_small_(textX,textY,msg2);
-      else      
-	textX=os_draw_string_(textX,textY,msg2);
+	os_draw_string_small(textX,textY,TEXT_COLOR_BLACK,COLOR_WHITE,msg2);
+      else
+	textX=os_draw_string(textX,textY,TEXT_COLOR_BLACK,COLOR_WHITE,msg2);
     }
     return textX;
   }
-  
+
   void insert(string & s,int pos,const char * add){
     if (pos>s.size())
       pos=s.size();
@@ -320,7 +387,9 @@ namespace giac {
   
   int confirm(const char * msg1,const char * msg2,bool acexit,int y){
     int key=0;
+    kdlg_confirm=true;
     print_msg12(msg1,msg2,y);
+    kdlg_confirm=false;
     while (key!=KEY_CTRL_F1 && key!=KEY_CTRL_F6){
       GetKey(&key);
       if (key==KEY_SHUTDOWN)
@@ -407,6 +476,138 @@ namespace giac {
     PrintXY(x,y,text,0);
   }
 
+
+  // ------------------------------------------------------------------
+  // Redesign : dessin des menus (panneau arrondi, indices en touches,
+  // sélection indigo, barre de défilement fine). La logique clavier
+  // de doMenu est inchangée.
+  // ------------------------------------------------------------------
+  static void kmenu_draw(Menu * menu,int itemsStartY,int itemsHeight,int showtitle,const char * keyword){
+    using namespace kui;
+    const int OY=18; // décalage de la zone de l'app sur l'écran
+    int x0=C10*menu->startX, y0=C18*menu->startY+OY, w=C10*menu->width, h=C18*menu->height;
+    if (x0+w>320) w=320-x0;
+    bool full = (x0<=10 && w>=300);
+    // panneau
+    int px=x0-3, py=y0-3, pw=w+6, ph=h+6;
+    if (px<0){ pw+=px; px=0; }
+    if (py<OY){ ph-=OY-py; py=OY; }
+    if (px+pw>320) pw=320-px;
+    if (py+ph>SOFTBAR_Y) ph=SOFTBAR_Y-py;
+    if (full){ px=0; pw=320; }
+    if (full)
+      fill(px,py,pw,ph,SURFACE);
+    else
+      box(px,py,pw,ph,10,SURFACE,BORDER_STRONG,SURFACE);
+    int ix=x0+(full?4:0), iw=w-(full?8:0);
+    bool scroll = menu->scrollbar && menu->numitems>itemsHeight;
+    int iwr = iw-(scroll?5:0);
+    // titre
+    if (showtitle){
+      int ty=y0;
+      int tx=text(ix+4,ty,menu->title,kf_ui_13sb,TEXT,SURFACE);
+      if (menu->subtitle)
+        text_clip(tx+6,ty+2,menu->subtitle,kf_ui_10,TEXT3,SURFACE,ix+iw-40);
+      if (keyword && keyword[0]){
+        int kw=width(keyword,kf_mono_sm)+12;
+        int kx=ix+iw-kw-2;
+        box(kx,ty+2,kw,15,4,ALPHA_SOFT,ALPHA_SOFT,SURFACE);
+        text(kx+6,ty+2,keyword,kf_mono_sm,ALPHA,ALPHA_SOFT);
+      }
+      hline(ix+2,ty+C18-1,iw-4,BORDER);
+    }
+    // largeur de la colonne d'indice
+    bool numbered = !(menu->numitems>=100 || menu->type==MENUTYPE_MULTISELECT || menu->type==MENUTYPE_NO_NUMBER);
+    int kcol = numbered ? keycap_width(menu->numitems>=10?"88":"8")+6 : (menu->type==MENUTYPE_MULTISELECT?14:2);
+    if (menu->numitems>0){
+      for (int curitem=0; curitem<menu->numitems; curitem++){
+        if (!(menu->scroll<=curitem && menu->scroll>curitem-itemsHeight)) continue;
+        int ry=C18*(curitem+itemsStartY-menu->scroll)+OY;
+        bool sel = menu->selection==curitem+1;
+        MenuItem & it=menu->items[curitem];
+        if (it.type==MENUITEM_SEPARATOR){
+          fill(ix,ry,iwr,C18,SURFACE);
+          hline(ix+4,ry+C18/2,iwr-8,BORDER);
+          continue;
+        }
+        uint16_t rb = sel ? PRIMARY_SOFT : SURFACE;
+        if (sel) { fill(ix,ry,iwr,C18,SURFACE); box(ix,ry,iwr,C18,6,PRIMARY_SOFT,PRIMARY_SOFT,SURFACE); }
+        else fill(ix,ry,iwr,C18,SURFACE);
+        int tx=ix+4;
+        if (numbered){
+          char num[4]; int cur=curitem+1;
+          if (cur<10){ num[0]='0'+cur; num[1]=0; } else { num[0]='0'+cur/10; num[1]='0'+cur%10; num[2]=0; }
+          keycap(tx,ry+2,num,sel?KEY_PRIMARY:KEY_PLAIN,rb);
+          tx+=kcol;
+        }
+        else if (menu->type==MENUTYPE_MULTISELECT){
+          if (it.isselected) box(tx+1,ry+6,6,6,3,PRIMARY,PRIMARY,rb);
+          tx+=kcol;
+        }
+        int xmax=ix+iwr-4;
+        if (it.type==MENUITEM_CHECKBOX){
+          bool on = it.value==MENUITEM_VALUE_CHECKED;
+          int sx=ix+iwr-28;
+          box(sx,ry+3,24,12,6,on?PRIMARY:BORDER_STRONG,on?PRIMARY:BORDER_STRONG,rb);
+          box(on?sx+14:sx+2,ry+4,10,10,5,SURFACE,SURFACE,on?PRIMARY:BORDER_STRONG);
+          xmax=sx-4;
+        }
+        // « Libellé (raccourci) » → libellé + touche à droite ; « Libellé\tvaleur » → valeur à droite
+        const char * itxt = it.text?it.text:"";
+        string lab(itxt), sc;
+        size_t tab=lab.find('\t');
+        if (tab!=string::npos){
+          string val=lab.substr(tab+1); lab=lab.substr(0,tab);
+          int vw=width(val.c_str(),kf_ui_12m);
+          text(xmax-vw,ry,val.c_str(),kf_ui_12m,sel?PRIMARY_STRONG:TEXT,rb);
+          xmax-=vw+10;
+        }
+        size_t lp=lab.rfind(" (");
+        if (lab.size()>3 && lab[lab.size()-1]==')' && lp!=string::npos && lp>0 && lab.size()-lp<=12){
+          sc=lab.substr(lp+2,lab.size()-lp-3); lab=lab.substr(0,lp);
+          static const char * const km[][2]={{"shift ANS","⇧ Ans"},{"e^","eˣ"},{"x^y","xʸ"},{"x^2","x²"},{"sqrt","√"},{"pi","π"},{"HOME","Home"}};
+          for (unsigned q=0;q<sizeof(km)/sizeof(km[0]);q++) if (sc==km[q][0]) sc=km[q][1];
+        }
+        if (!sc.empty()){
+          int kw=keycap_width(sc.c_str());
+          keycap(xmax-kw,ry+2,sc.c_str(),sc[0]==char(0xe2)&&sc.compare(0,3,"⇧")==0?KEY_SHIFT:KEY_PLAIN,rb);
+          xmax-=kw+6;
+        }
+        text_clip(tx,ry,lab.c_str(),kf_ui_12,sel?PRIMARY_STRONG:TEXT,rb,xmax);
+      }
+      // lignes vides sous les éléments
+      int shown = menu->numitems-menu->scroll; if (shown>itemsHeight) shown=itemsHeight;
+      int yend=C18*(itemsStartY+shown)+OY, ybot=C18*(itemsStartY+itemsHeight)+OY;
+      if (ybot>yend) fill(ix,yend,iwr,ybot-yend,SURFACE);
+      if (scroll){
+        int ty=C18*itemsStartY+OY+2, th=C18*itemsHeight-4;
+        int tx=ix+iw-3;
+        fill(tx,ty,2,th,SURFACE2);
+        int thumb = th*itemsHeight/menu->numitems; if (thumb<10) thumb=10;
+        int pos = (th-thumb)*menu->scroll/(menu->numitems-itemsHeight>0?menu->numitems-itemsHeight:1);
+        fill(tx,ty+pos,2,thumb,PRIMARY);
+      }
+    }
+    else if (menu->nodatamsg){
+      int tw=width(menu->nodatamsg,kf_ui_12);
+      text(ix+(iw-tw)/2,C18*itemsStartY+OY+C18*itemsHeight/2-8,menu->nodatamsg,kf_ui_12,TEXT3,SURFACE);
+    }
+  }
+
+
+  // Redesign : écran d'accueil (Figma, écrans 01–02)
+  void kwelcome(){
+    using namespace kui;
+    fill(0,18,320,222,SURFACE);
+    box(16,30,40,40,10,PRIMARY,PRIMARY,SURFACE);
+    text(16+(40-width("χ",kf_math_17i))/2,30+11,"χ",kf_math_17i,ON_ACCENT,PRIMARY);
+    text(68,30,"KhiCAS",kf_ui_20sb,TEXT,SURFACE);
+    text(68,56,(lang==1)?"Calcul formel · Giac / Xcas 1.6":"Computer algebra · Giac / Xcas 1.6",kf_ui_10,TEXT3,SURFACE);
+    text(16,80,"© 2020 B. Parisse et al. · GPL 2",kf_ui_10,TEXT3,SURFACE);
+    box(12,94,296,40,8,SHIFT_SOFT,SHIFT_SOFT,SURFACE);
+    text_wrap(22,99,280,(lang==1)?"Calcul formel interdit en examen ? Quittez KhiCAS avec HOME ×3.":"CAS forbidden in your exam? Leave KhiCAS with HOME ×3.",kf_ui_11m,TEXT,SHIFT_SOFT,2,15);
+  }
+
   int doMenu(Menu* menu, MenuItemIcon* icontable) { // returns code telling what user did. selection is on menu->selection. menu->selection starts at 1!
     int itemsStartY=menu->startY; // char Y where to start drawing the menu items. Having a title increases this by one
     int itemsHeight=menu->height;
@@ -414,6 +615,17 @@ namespace giac {
     if (showtitle) {
       itemsStartY++;
       itemsHeight--;
+    }
+    // redesign : les éléments restent au-dessus de la barre du bas (198 px de contenu)
+    if (C18*(itemsStartY+itemsHeight) > 198)
+      itemsHeight = 198/C18 - itemsStartY;
+    if (itemsHeight<1) itemsHeight=1;
+    {
+      static const char * const hk[4]={"OK","1…9",0,"Back"};
+      static const char * const hl[4]={"Choisir","Accès direct",0,"Fermer"};
+      static const kui::KeyType ht[4]={kui::KEY_PRIMARY,kui::KEY_PLAIN,kui::KEY_PLAIN,kui::KEY_PLAIN};
+      const char * const * k2, * const * l2;
+      if (kui::take_menu_hints(k2,l2)) kui::hints(k2,l2,ht); else kui::hints(hk,hl,ht);
     }
     char keyword[5];
     keyword[0]=0;
@@ -431,134 +643,8 @@ namespace giac {
       if (menu->selection-1 < menu->scroll)
 	menu->scroll = menu->selection -1;
       if(menu->statusText != NULL) DefineStatusMessage(menu->statusText, 1, 0, 0);
-      // Clear the area of the screen we are going to draw on
-      if(0 == menu->pBaRtR) {
-	int x=C10*menu->startX-1,
-	  y=C24*(menu->miniMiniTitle ? itemsStartY:menu->startY)-1,
-	  w=2+C10*menu->width /* + ((menu->scrollbar && menu->scrollout)?C10:0) */,
-	  h=2+C24*menu->height-(menu->miniMiniTitle ? C24:0);
-	// drawRectangle(x, y, w, h, COLOR_WHITE);
-	draw_line(x,y,x+w,y,COLOR_BLACK,context0);
-	draw_line(x,y+h,x+w,y+h,COLOR_BLACK,context0);
-	draw_line(x,y,x,y+h,COLOR_BLACK,context0);
-	draw_line(x+w,y,x+w,y+h,COLOR_BLACK,context0);
-      }
-      if (menu->numitems>0) {
-	for(int curitem=0; curitem < menu->numitems; curitem++) {
-	  // print the menu item only when appropriate
-	  if(menu->scroll <= curitem && menu->scroll > curitem-itemsHeight) {
-	    if ((curitem-menu->scroll) % 6==0)
-	      waitforvblank();
-	    char menuitem[256] = "";
-	    if(menu->numitems>=100 || menu->type == MENUTYPE_MULTISELECT){
-	      strcpy(menuitem, "  "); //allow for the folder and selection icons on MULTISELECT menus (e.g. file browser)
-	      strcpy(menuitem+2,menu->items[curitem].text);
-	    }
-	    else if (menu->type==MENUTYPE_NO_NUMBER)
-	      strcpy(menuitem,menu->items[curitem].text);
-	    else {
-	      int cur=curitem+1;
-	      if (menu->numitems<10){
-		menuitem[0]='0'+cur;
-		menuitem[1]=' ';
-		menuitem[2]=0;
-		strcpy(menuitem+2,menu->items[curitem].text);
-	      }
-	      else {
-		menuitem[0]=cur>=10?('0'+(cur/10)):' ';
-		menuitem[1]='0'+(cur%10);
-		menuitem[2]=' ';
-		menuitem[3]=0;
-		strcpy(menuitem+3,menu->items[curitem].text);
-	      }
-	    }
-	    //strncat(menuitem, menu->items[curitem].text, 68);
-	    if(menu->items[curitem].type != MENUITEM_SEPARATOR) {
-	      //make sure we have a string big enough to have background when item is selected:          
-	      // MB_ElementCount is used instead of strlen because multibyte chars count as two with strlen, while graphically they are just one char, making fillerRequired become wrong
-	      int fillerRequired = menu->width - MB_ElementCount(menu->items[curitem].text) - (menu->type == MENUTYPE_MULTISELECT ? 2 : 3);
-	      for(int i = 0; i < fillerRequired; i++)
-		strcat(menuitem, " ");
-	      drawRectangle(C10*menu->startX,C18*(curitem+itemsStartY-menu->scroll),C10*menu->width,C24,(menu->selection == curitem+1 ? color_gris : _WHITE));
-	      PrintXY(C10*menu->startX,C18*(curitem+itemsStartY-menu->scroll),menuitem, (menu->selection == curitem+1 ? TEXT_MODE_INVERT : TEXT_MODE_NORMAL));
-	    } else {
-	      /*int textX = (menu->startX-1) * C18;
-		int textY = curitem*C24+itemsStartY*C24-menu->scroll*C24-C24+C10;
-		clearLine(menu->startX, curitem+itemsStartY-menu->scroll, (menu->selection == curitem+1 ? textColorToFullColor(menu->items[curitem].color) : COLOR_WHITE));
-		drawLine(textX, textY+C24-4, LCD_WIDTH_PX-2, textY+C24-4, COLOR_GRAY);
-		PrintMini(&textX, &textY, (unsigned char*)menuitem, 0, 0xFFFFFFFF, 0, 0, (menu->selection == curitem+1 ? COLOR_WHITE : textColorToFullColor(menu->items[curitem].color)), (menu->selection == curitem+1 ? textColorToFullColor(menu->items[curitem].color) : COLOR_WHITE), 1, 0);*/
-	    }
-	    // deal with menu items of type MENUITEM_CHECKBOX
-	    if(menu->items[curitem].type == MENUITEM_CHECKBOX) {
-	      PrintXY(C10*(menu->startX+menu->width-4),C18*(curitem+itemsStartY-menu->scroll),
-		      (menu->items[curitem].value == MENUITEM_VALUE_CHECKED ? " [+]" : " [-]"),
-		      (menu->selection == curitem+1 ? TEXT_MODE_INVERT : (menu->pBaRtR == 1? TEXT_MODE_NORMAL : TEXT_MODE_NORMAL)));
-	    }
-	    // deal with multiselect menus
-	    if(menu->type == MENUTYPE_MULTISELECT) {
-	      if((curitem+itemsStartY-menu->scroll)>=itemsStartY &&
-		 (curitem+itemsStartY-menu->scroll)<=(itemsStartY+itemsHeight) &&
-		 icontable != NULL
-		 ) {
-#if 0
-		if (menu->items[curitem].isfolder == 1) {
-		  // assumes first icon in icontable is the folder icon
-		  CopySpriteMasked(icontable[0].data, (menu->startX)*C18, (curitem+itemsStartY-menu->scroll)*C24, 0x12, 0x18, 0xf81f  );
-		} else {
-		  if(menu->items[curitem].icon >= 0) CopySpriteMasked(icontable[menu->items[curitem].icon].data, (menu->startX)*C18, (curitem+itemsStartY-menu->scroll)*C24, 0x12, 0x18, 0xf81f  );
-		}
-#endif
-	      }
-	      if (menu->items[curitem].isselected) {
-		if (menu->selection == curitem+1) {
-		  PrintXY(C10*menu->startX,C18*(curitem+itemsStartY-menu->scroll),"\xe6\x9b", TEXT_MODE_NORMAL);
-		} else {
-		  PrintXY(C10*menu->startX,C18*(curitem+itemsStartY-menu->scroll),"\xe6\x9b", TEXT_MODE_NORMAL);
-		}
-	      }
-	    }
-	  }
-	} // end for curitem<menu->numitem
-	int dh=menu->height-menu->numitems-(showtitle?1:0);
-	if (dh>0)
-	  drawRectangle(C10*menu->startX,C24*(menu->numitems+(showtitle?1:0)),C10*menu->width,C24*dh,_WHITE);
-	if (menu->scrollbar) {
-#ifdef SCROLLBAR
-	  TScrollbar sb;
-	  sb.I1 = 0;
-	  sb.I5 = 0;
-	  sb.indicatormaximum = menu->numitems;
-	  sb.indicatorheight = itemsHeight;
-	  sb.indicatorpos = menu->scroll;
-	  sb.barheight = itemsHeight*C24;
-	  sb.bartop = (itemsStartY-1)*C24;
-	  sb.barleft = menu->startX*C18+menu->width*C18 - C18 - (menu->scrollout ? 0 : 5);
-	  sb.barwidth = C10;
-	  Scrollbar(&sb);
-#endif
-	}
-	//if(menu->type==MENUTYPE_MULTISELECT && menu->fkeypage == 0) drawFkeyLabels(0x0037); // SELECT (white)
-      } else {
-	giac::printCentered(menu->nodatamsg, (itemsStartY*C24)+(itemsHeight*C24)/2-12);
-      }
-      if(showtitle) {
-	int textX = C10*menu->startX, textY=menu->startY*C24;
-	drawRectangle(textX,textY,C10*menu->width,C24,_WHITE);
-	if (menu->miniMiniTitle) 
-	  PrintMini( textX, textY, menu->title, 0 );
-	else
-	  PrintXY(textX, textY, menu->title, TEXT_MODE_NORMAL);
-	if(menu->subtitle != NULL) {
-	  int textX=(MB_ElementCount(menu->title)+menu->startX-1)*C18+C10, textY=C10;
-	  PrintMini(textX, textY, menu->subtitle, 0);
-	}
-	PrintXY(textX+C10*(menu->width-5), 1, "____", 0);
-	PrintXY(textX+C10*(menu->width-5), 1, keyword, 0);
-      }
-      /*if(menu->darken) {
-	DrawFrame(COLOR_BLACK);
-	VRAMInvertArea(menu->startX*C18-C18, menu->startY*C24, menu->width*C18-(menu->scrollout || !menu->scrollbar ? 0 : 5), menu->height*C24);
-	}*/
+      kmenu_draw(menu,itemsStartY,itemsHeight,showtitle,keyword); // redesign
+      kui::status_redraw();
       if(menu->type == MENUTYPE_NO_KEY_HANDLING) return MENU_RETURN_INSTANT; // we don't want to handle keys
       int key;
       GetKey(&key);
@@ -1665,27 +1751,27 @@ const catalogFunc completeCaten[] = { // list of all functions (including some n
     // returns 0 on failure (user exit) and 1 on success (user chose a option)
     MenuItem menuitems[CAT_CATEGORY_LOGO+1];
     menuitems[CAT_CATEGORY_ALL].text = (char*)((lang==1)?"Tout":"All");
-    menuitems[CAT_CATEGORY_ALGEBRA].text = (char*)((lang==1)?"Algebre":"Algebra");
-    menuitems[CAT_CATEGORY_LINALG].text = (char*)((lang==1)?"Algebre lineaire":"Linear algebra");
+    menuitems[CAT_CATEGORY_ALGEBRA].text = (char*)((lang==1)?"Algèbre":"Algebra");
+    menuitems[CAT_CATEGORY_LINALG].text = (char*)((lang==1)?"Algèbre linéaire":"Linear algebra");
     menuitems[CAT_CATEGORY_CALCULUS].text = (char*)((lang==1)?"Analyse":"Calculus");
     menuitems[CAT_CATEGORY_ARIT].text = (char*)"Arithmetic, crypto";
     menuitems[CAT_CATEGORY_COMPLEXNUM].text = (char*)"Complexes";
     menuitems[CAT_CATEGORY_PLOT].text = (char*)((lang==1)?"Courbes":"Curves");
-    menuitems[CAT_CATEGORY_POLYNOMIAL].text = (char*)((lang==1)?"Polynomes":"Polynomials");
-    menuitems[CAT_CATEGORY_PROBA].text = (char*)((lang==1)?"Probabilites":"Probabilities");
-    menuitems[CAT_CATEGORY_PROGCMD].text = (char*)((lang==1)?"Programmes cmds (0)":"Program cmds (0)");
-    menuitems[CAT_CATEGORY_REAL].text = (char*)((lang==1)?"Reels (e^)":"Reals");
-    menuitems[CAT_CATEGORY_SOLVE].text = (char*)((lang==1)?"Resoudre (ln)":"Solve (ln)");
+    menuitems[CAT_CATEGORY_POLYNOMIAL].text = (char*)((lang==1)?"Polynômes":"Polynomials");
+    menuitems[CAT_CATEGORY_PROBA].text = (char*)((lang==1)?"Probabilités":"Probabilities");
+    menuitems[CAT_CATEGORY_PROGCMD].text = (char*)((lang==1)?"Commandes de programmation (0)":"Program cmds (0)");
+    menuitems[CAT_CATEGORY_REAL].text = (char*)((lang==1)?"Réels (e^)":"Reals");
+    menuitems[CAT_CATEGORY_SOLVE].text = (char*)((lang==1)?"Résoudre (ln)":"Solve (ln)");
     menuitems[CAT_CATEGORY_STATS].text = (char*)((lang==1)?"Statistiques (log)":"Statistics (log)");
-    menuitems[CAT_CATEGORY_TRIG].text = (char*)((lang==1)?"Trigonometrie (i)":"Trigonometry (i)");
+    menuitems[CAT_CATEGORY_TRIG].text = (char*)((lang==1)?"Trigonométrie (i)":"Trigonometry (i)");
     menuitems[CAT_CATEGORY_OPTIONS].text = (char*)"Options (,)";
     menuitems[CAT_CATEGORY_LIST].text = (char*)((lang==1)?"Listes (x^y)":"Lists (x^y)");
     menuitems[CAT_CATEGORY_MATRIX].text = (char*)"Matrices (sin)";
     menuitems[CAT_CATEGORY_PROG].text = (char*)((lang==1)?"Programmes (cos)":"Programs");
-    menuitems[CAT_CATEGORY_SOFUS].text = (char*)((lang==1)?"Modifier variables (tan)":"Change variables (tan)");
-    menuitems[CAT_CATEGORY_PHYS].text = (char*)((lang==1)?"Constantes physique (pi)":"Physics constants (pi)");
-    menuitems[CAT_CATEGORY_UNIT].text = (char*)((lang==1)?"Unites physiques (sqrt)":"Units (sqrt)");
-    menuitems[CAT_CATEGORY_2D].text = (char*)((lang==1)?"Geometrie (x^2)":"Geometry (x^2)");
+    menuitems[CAT_CATEGORY_SOFUS].text = (char*)((lang==1)?"Variables (tan)":"Change variables (tan)");
+    menuitems[CAT_CATEGORY_PHYS].text = (char*)((lang==1)?"Constantes physiques (pi)":"Physics constants (pi)");
+    menuitems[CAT_CATEGORY_UNIT].text = (char*)((lang==1)?"Unités physiques (sqrt)":"Units (sqrt)");
+    menuitems[CAT_CATEGORY_2D].text = (char*)((lang==1)?"Géométrie (x^2)":"Geometry (x^2)");
     menuitems[CAT_CATEGORY_3D].text = (char*)((lang==1)?"3D (()":"3D (()");
     menuitems[CAT_CATEGORY_LOGO].text = (char*)((lang==1)?"Tortue ())":"Turtle ())");
   
@@ -1693,7 +1779,7 @@ const catalogFunc completeCaten[] = { // list of all functions (including some n
     menu.items=menuitems;
     menu.numitems=sizeof(menuitems)/sizeof(MenuItem);
     menu.scrollout=1;
-    menu.title = (char*)((lang==1)?"Liste de commandes":"Commands list");
+    menu.title = (char*)((lang==1)?"Catalogue":"Commands list");
     //puts("catalog 1");
     while(1) {
       if (preselect)
@@ -1723,6 +1809,7 @@ const catalogFunc completeCaten[] = { // list of all functions (including some n
   }
 
   string remove_accents(const string & s){
+    return s; // redesign : les polices anti-aliasées affichent les accents
     string r;
     for (int i=0;i<s.size();++i){
       unsigned char ch=s[i];
@@ -1754,6 +1841,72 @@ const catalogFunc completeCaten[] = { // list of all functions (including some n
   }
 
   // back is the number of char that should be deleted before inserting
+
+  // ------------------------------------------------------------------
+  // Redesign : fiche d'une commande du catalogue (écran 10 du Figma).
+  // elem : [nom, « Syntaxe: … », description, « Ans: exemple », « EXE: exemple »]
+  // Renvoie MENU_RETURN_SELECTION (OK), KEY_CHAR_ANS, KEY_CTRL_EXE ou KEY_CTRL_EXIT.
+  // ------------------------------------------------------------------
+  static string kstrip(const string & s,const char * prefix){
+    size_t l=strlen(prefix);
+    string r = s.compare(0,l,prefix)==0 ? s.substr(l) : s;
+    while (!r.empty() && r[0]==' ') r.erase(0,1);
+    return r;
+  }
+  int kfiche(const std::vector<xcas::textElement> & elem,GIAC_CONTEXT){
+    using namespace kui;
+    string name=kstrip(elem.size()>0?elem[0].s:"","");
+    string cf; size_t c=name.find(" (cf. ");
+    if (c!=string::npos){ cf=name.substr(c+2,name.size()-c-3); name=name.substr(0,c); }
+    // les éléments sont reconnus à leur préfixe (deux constructions différentes dans KhiCAS)
+    string syn, desc, ex1, ex2; const char * k1="Ans", * k2="EXE";
+    for (size_t i=1;i<elem.size();i++){
+      const string & e=elem[i].s;
+      if (e.compare(0,8,"Syntaxe:")==0 || e.compare(0,7,"Syntax:")==0) syn=kstrip(kstrip(e,"Syntaxe:"),"Syntax:");
+      else if (e.compare(0,4,"Ans:")==0 || e.compare(0,4,"tab:")==0){ (ex1.empty()?ex1:ex2)=e.substr(4); if (ex1.size() && ex2.empty()) k1="Ans"; else k2="Ans"; }
+      else if (e.compare(0,4,"EXE:")==0 || e.compare(0,4,"ret:")==0){ (ex1.empty()?ex1:ex2)=e.substr(4); if (ex2.empty()) k1="EXE"; else k2="EXE"; }
+      else if (desc.empty()) desc=e;
+    }
+    while (!ex1.empty() && ex1[0]==' ') ex1.erase(0,1);
+    while (!ex2.empty() && ex2[0]==' ') ex2.erase(0,1);
+    for (;;){
+      fill(0,18,320,198,SURFACE);
+      int y=24;
+      text_clip(12,y,name.c_str(),kf_mono_l,SYN_FN,SURFACE,308);
+      if (!cf.empty()) text_clip(12+width(name.c_str(),kf_mono_l)+8,y+4,cf.c_str(),kf_ui_10,TEXT3,SURFACE,308);
+      y+=24;
+      y=text_wrap(12,y,296,desc.c_str(),kf_ui_12,TEXT2,SURFACE,4,16)+6;
+      if (!syn.empty() && syn!=name){
+        text(12,y,(lang==1)?"SYNTAXE":"SYNTAX",kf_ui_9sb,TEXT3,SURFACE); y+=14;
+        box(10,y,300,20,6,SURFACE2,SURFACE2,SURFACE);
+        text_clip(16,y+3,syn.c_str(),kf_mono_sm,TEXT,SURFACE2,304); y+=26;
+      }
+      if (!ex1.empty()){
+        text(12,y,(lang==1)?"EXEMPLES":"EXAMPLES",kf_ui_9sb,TEXT3,SURFACE); y+=14;
+        const string * ex[2]={&ex1,&ex2}; const char * k[2]={k1,k2};
+        for (int i=0;i<2 && y<200;i++){
+          if (ex[i]->empty()) continue;
+          int x=keycap(12,y+2,k[i],KEY_PLAIN,SURFACE)+8;
+          text_clip(x,y+1,ex[i]->c_str(),kf_mono_sm,TEXT,SURFACE,308);
+          y+=19;
+        }
+      }
+      {
+        static const char * const hk[4]={"OK","Ans",0,"Back"};
+        static const char * const hl[4]={(lang==1)?"Insérer":"Insert",(lang==1)?"Exemple":"Example",0,(lang==1)?"Retour":"Back"};
+        static const KeyType ht[4]={KEY_PRIMARY,KEY_PLAIN,KEY_PLAIN,KEY_PLAIN};
+        hints(hk,hl,ht);
+      }
+      int key; GetKey(&key);
+      if (key==KEY_SHUTDOWN) return key;
+      if (key==KEY_CTRL_OK) return MENU_RETURN_SELECTION;
+      if (key==KEY_CHAR_ANS || key==KEY_BOOK || key=='\t') return KEY_CHAR_ANS;
+      if (key==KEY_CTRL_EXE) return KEY_CTRL_EXE;
+      if (key==KEY_CTRL_EXIT || key==KEY_CTRL_AC || key==KEY_CTRL_LEFT) return KEY_CTRL_EXIT;
+    }
+  }
+
+
   string help_insert(const char * cmdline,int & back,int exec,GIAC_CONTEXT,bool warn){
     if (exec==KEY_CTRL_OK)
       exec=MENU_RETURN_SELECTION;
@@ -1933,7 +2086,7 @@ const catalogFunc completeCaten[] = { // list of all functions (including some n
 	else
 	  elem.pop_back();
       }
-      exec=doTextArea(&text,contextptr);
+      exec=kfiche(elem,contextptr); // redesign : fiche commande (au lieu de doTextArea)
     }
     if (exec==KEY_SHUTDOWN)
       return "";
@@ -2198,7 +2351,7 @@ const catalogFunc completeCaten[] = { // list of all functions (including some n
 	    else
 	      elem.pop_back();
 	  }
-	  sres=doTextArea(&text,contextptr);
+	  sres=kfiche(elem,contextptr); // redesign
 	}
 	if (sres == KEY_CHAR_ANS || sres=='\t' ||sres==KEY_BOOK || sres==KEY_CTRL_EXE) {
 	  reset_kbd();
@@ -3808,6 +3961,27 @@ namespace xcas {
   // void Bdisp_MMPrint(int x, int y, const char* string, int mode_flags, int xlimit, int P6, int P7, int color, int back_color, int writeflag, int P11); 
   // void PrintCXY(int x, int y, const char *cptr, int mode_flags, int P5, int color, int back_color, int P8, int P9)
   // void PrintMini( int* x, int* y, const char* string, int mode_flags, unsigned int xlimit, int P6, int P7, int color, int back_color, int writeflag, int P11) 
+  // redesign : police selon la taille (≥18 : STIX 17, ≥12 : STIX 13, sinon Geist 10) ;
+  // une lettre seule (variable) en italique
+  static const char * kmathstr(const char * s){
+    if (strcmp(s,"pi")==0) return "π";
+    if (strcmp(s,"*")==0) return "·";
+    if (strcmp(s,"-")==0) return "−";
+    if (strcmp(s,"infinity")==0) return "∞";
+    if (strchr(s,'-')){ // signe moins typographique
+      static string buf; buf.clear();
+      for (const char * p=s;*p;p++){ if (*p=='-') buf+="−"; else buf+=*p; }
+      return buf.c_str();
+    }
+    return s;
+  }
+  static const kfont & kmathfont(int fontsize,const char * s){
+    bool var = s && s[0] && !s[1] && isalpha((unsigned char)s[0]);
+    if (fontsize>=18) return var ? kf_math_17i : kf_math_17;
+    if (fontsize>=12) return var ? kf_math_13i : kf_math_13;
+    return kf_ui_10;
+  }
+
   void text_print(int fontsize,const char * s,int x,int y,int c=COLOR_BLACK,int bg=COLOR_WHITE,int mode=0){
     // *logptr(contextptr) << x << " " << y << " " << fontsize << " " << s << endl; return;
     c=(unsigned short) c;
@@ -3828,7 +4002,7 @@ namespace xcas {
       draw_line(x+fontsize/2-3,y-7,x+fontsize/2+1,y-3,c);   
       return;
     }
-    if (ss==2 && strcmp(s,"pi")==0){
+    if (false && ss==2 && strcmp(s,"pi")==0){
       if (mode==4){
 	drawRectangle(x,y+2-fontsize,fontsize,fontsize,c);
 	c=bg;
@@ -3841,19 +4015,17 @@ namespace xcas {
       draw_line(x+2,y+5-fontsize,x+fontsize,y+5-fontsize,c);
       return;
     }
-    if (fontsize>=16 && ss==2 && s[0]==char(0xe5) && (s[1]==char(0xea) || s[1]==char(0xeb))) // special handling for increasing and decreasing in tabvar output
-      fontsize=18;
-    if (fontsize>=18){
-      y -= 16;// status area shift
-      os_draw_string(x,y,mode==4?bg:c,mode==4?c:bg,s);
-      // PrintMini(&x,&y,(unsigned char *)s,mode,0xffffffff,0,0,c,bg,1,0);
+    { // redesign : typographie mathématique (STIX Two), sans-serif pour les petites étiquettes
+      const kfont & f = kmathfont(fontsize,s);
+      uint16_t fg=kui::remap_text(c), bgc=kui::remap_text(bg);
+      if (mode==4){ fg=kui::PRIMARY_STRONG; bgc=kui::PRIMARY_SOFT; }
+      const char * t = kmathstr(s);
+      int top = fontsize>=18 ? y-16 : y-12;
+      kui::text(x,top+18,t,f,fg,bgc);
       return;
     }
-    y -= 12;
-    x=os_draw_string_small(x,y,mode==4?bg:c,mode==4?c:bg,s);// PrintMiniMini( &x, &y, (unsigned char *)s, mode,c, 0 );
-    return;
   }
-  
+
   int text_width(int fontsize,const char * s){
 #ifdef NSPIRE_NEWLIB
     int x=0;
@@ -3863,10 +4035,19 @@ namespace xcas {
       x=os_draw_string_small(0,0,0,1,s,true);
     return x;
 #else
-    if (fontsize>=18)
-      return strlen(s)*11;
-    return strlen(s)*7;
+    return kui::width(kmathstr(s), kmathfont(fontsize,s));
 #endif
+  }
+
+  // redesign : « .5 » → « 0,5 », « 0.0 » → « 0 », « - » → « − »
+  static void ktick(char * ch){
+    string s(ch);
+    if (s=="0.0" || s=="-0.0" || s=="0.") s="0";
+    if (!s.empty() && s[0]=='.') s="0"+s;
+    if (s.size()>1 && s[0]=='-' && s[1]=='.') s="-0"+s.substr(1);
+    if (s.size()>2 && s.compare(s.size()-2,2,".0")==0) s.erase(s.size()-2);
+    string r; for (size_t i=0;i<s.size();i++){ if (s[i]=='.') r+=','; else if (s[i]=='-') r+="−"; else r+=s[i]; }
+    strncpy(ch,r.c_str(),255); ch[255]=0;
   }
 
   void fl_arc(int x,int y,int rx,int ry,int theta1_deg,int theta2_deg,int c=COLOR_BLACK){
@@ -7415,7 +7596,8 @@ namespace xcas {
 
   void checklog_fl_line(double i0,double j0,double i1,double j1,double deltax,double deltay,bool logx,bool logy,double window_xmin,double x_scale,double window_ymax,double y_scale,int c){
     if (!logx && !logy){
-      fl_line(round(i0+deltax),round(j0+deltay),round(i1+deltax),round(j1+deltay),c);
+      // redesign : segments anti-aliasés, précision sous-pixel (écran = zone de l'app + 18)
+      kui::seg(i0+deltax,j0+deltay+18,i1+deltax,j1+deltay+18,1.7f,(uint16_t)c,kui::SURFACE);
       return;
     }
   }
@@ -7579,6 +7761,7 @@ namespace xcas {
     int labelpos        =(ensemble_attributs & 0x30000000) >> 28; // 2 bits
     bool fill_polygon   =(ensemble_attributs & 0x40000000) >> 30;
     int couleur         =(ensemble_attributs & 0x0007ffff);
+    if (couleur==0) couleur=kui::PRIMARY; // redesign : courbes indigo par défaut
     epaisseur_point += 2;
     if (s==at_pnt){ 
       // f[0]=complex pnt or vector of complex pnts or symbolic
@@ -8202,7 +8385,7 @@ namespace xcas {
 #ifdef NSPIRE_NEWLIB
       DefineStatusMessage((char*)"+-: zoom, pad: move, esc: quit", 1, 0, 0);
 #else
-      DefineStatusMessage((char*)"+-: zoom, pad: move, EXIT: quit", 1, 0, 0);
+      DefineStatusMessage((char*)((lang==1)?"Graphe":"Graph"), 1, 0, 0);
 #endif
       DisplayStatusArea();
       return;
@@ -8211,6 +8394,21 @@ namespace xcas {
     clip_ymin=STATUS_AREA_PX;
     int horizontal_pixels=LCD_WIDTH_PX,vertical_pixels=LCD_HEIGHT_PX-STATUS_AREA_PX,deltax=0,deltay=STATUS_AREA_PX,clip_x=0,clip_y=0,clip_w=horizontal_pixels,clip_h=vertical_pixels;
     drawRectangle(0, STATUS_AREA_PX, horizontal_pixels, vertical_pixels,COLOR_WHITE);
+    // Redesign : grille légère aux graduations
+    const int K_AXIS=kui::rgb(0x9AA0B1), K_GRID=kui::rgb(0xECEEF4), K_TICK=kui::TEXT3;
+    if (show_axes){
+      vecteur gx=ticks(window_xmin,window_xmax,true), gy=ticks(window_ymin,window_ymax,true);
+      for (int i=0;i<int(gx.size());++i){
+        double d=evalf_double(gx[i],1,contextptr)._DOUBLE_val;
+        int dl=int(horizontal_pixels*(d-window_xmin)/(window_xmax-window_xmin));
+        if (dl>=0 && dl<horizontal_pixels) drawRectangle(dl,STATUS_AREA_PX,1,vertical_pixels,K_GRID);
+      }
+      for (int j=0;j<int(gy.size());++j){
+        double d=evalf_double(gy[j],1,contextptr)._DOUBLE_val;
+        int dl=int(vertical_pixels*(window_ymax-d)/(window_ymax-window_ymin));
+        if (dl>=0 && dl<vertical_pixels) drawRectangle(0,STATUS_AREA_PX+dl,horizontal_pixels,1,K_GRID);
+      }
+    }
     // Draw axis
     double I0,J0;
     findij(zero,x_scale,y_scale,I0,J0,contextptr); // origin
@@ -8218,8 +8416,8 @@ namespace xcas {
     if (show_axes &&  (window_ymax>=0) && (window_ymin<=0)){ // X-axis
       vecteur aff; int affs;
       char ch[256];
-      check_fl_line(deltax,deltay+j_0,deltax+horizontal_pixels,deltay+j_0,clip_x,clip_y,clip_w,clip_h,0,0,_GREEN); 
-      check_fl_line(deltax+i_0,deltay+j_0,deltax+i_0+int(x_scale),deltay+j_0,clip_x,clip_y,clip_w,clip_h,0,0,_CYAN);
+      check_fl_line(deltax,deltay+j_0,deltax+horizontal_pixels,deltay+j_0,clip_x,clip_y,clip_w,clip_h,0,0,K_AXIS); 
+      check_fl_line(deltax+i_0,deltay+j_0,deltax+i_0+int(x_scale),deltay+j_0,clip_x,clip_y,clip_w,clip_h,0,0,K_AXIS);
       aff=ticks(window_xmin,window_xmax,true);
       affs=aff.size();
       for (int i=0;i<affs;++i){
@@ -8227,15 +8425,15 @@ namespace xcas {
 	if (fabs(d)<1e-6) strcpy(ch,"0"); else sprint_double(ch,d);
 	int delta=int(horizontal_pixels*(d-window_xmin)/(window_xmax-window_xmin));
 	int taille=strlen(ch)*9;
-	fl_line(delta,deltay+j_0,delta,deltay+j_0-4,_GREEN);
+	fl_line(delta,deltay+j_0,delta,deltay+j_0-3,K_AXIS);
       }
-      check_fl_draw(labelsize,"x",deltax+horizontal_pixels-40,deltay+j_0-4,clip_x,clip_y,clip_w,clip_h,0,0,_GREEN);
+      check_fl_draw(labelsize,"x",deltax+horizontal_pixels-40,deltay+j_0-4,clip_x,clip_y,clip_w,clip_h,0,0,kui::TEXT2);
     }
     if ( show_axes && (window_xmax>=0) && (window_xmin<=0) ) {// Y-axis
       vecteur aff; int affs;
       char ch[256];
-      check_fl_line(deltax+i_0,deltay,deltax+i_0,deltay+vertical_pixels,clip_x,clip_y,clip_w,clip_h,0,0,_RED);
-      check_fl_line(deltax+i_0,deltay+j_0,deltax+i_0,deltay+j_0-int(y_scale),clip_x,clip_y,clip_w,clip_h,0,0,_CYAN);
+      check_fl_line(deltax+i_0,deltay,deltax+i_0,deltay+vertical_pixels,clip_x,clip_y,clip_w,clip_h,0,0,K_AXIS);
+      check_fl_line(deltax+i_0,deltay+j_0,deltax+i_0,deltay+j_0-int(y_scale),clip_x,clip_y,clip_w,clip_h,0,0,K_AXIS);
       aff=ticks(window_ymin,window_ymax,true);
       affs=aff.size();
       int taille=5;
@@ -8244,10 +8442,10 @@ namespace xcas {
 	if (fabs(d)<1e-6) strcpy(ch,"0"); else sprint_double(ch,d);
 	int delta=int(vertical_pixels*(window_ymax-d)/(window_ymax-window_ymin));
 	if (delta>=taille && delta<=vertical_pixels-taille){
-	  fl_line(deltax+i_0,STATUS_AREA_PX+delta,deltax+i_0+4,STATUS_AREA_PX+delta,_RED);
+	  fl_line(deltax+i_0,STATUS_AREA_PX+delta,deltax+i_0+3,STATUS_AREA_PX+delta,K_AXIS);
 	}
       }
-      check_fl_draw(labelsize,"y",deltax+i_0+2,deltay+labelsize,clip_x,clip_y,clip_w,clip_h,0,0,_RED);
+      check_fl_draw(labelsize,"y",deltax+i_0+2,deltay+labelsize,clip_x,clip_y,clip_w,clip_h,0,0,kui::TEXT2);
     }
 #if 0 // if ticks are enabled, don't forget to set freeze to false
     // Ticks
@@ -8277,10 +8475,11 @@ namespace xcas {
 	double d=evalf_double(aff[i],1,contextptr)._DOUBLE_val;
 	sprint_double(ch,d);
 	delta=int(horizontal_pixels*(d-window_xmin)/(window_xmax-window_xmin));
-	taille=strlen(ch)*9;
-	fl_line(delta,vertical_pixels+STATUS_AREA_PX-6,delta,vertical_pixels+STATUS_AREA_PX-1,_GREEN);
+	ktick(ch);
+	taille=text_width(10,ch);
+	fl_line(delta,vertical_pixels+STATUS_AREA_PX-30,delta,vertical_pixels+STATUS_AREA_PX-25,K_AXIS);
 	if (delta>=taille/2 && delta<=horizontal_pixels){
-	  text_print(10,ch,delta-taille/2,vertical_pixels+STATUS_AREA_PX-7,_GREEN);
+	  text_print(10,ch,delta-taille/2,vertical_pixels+STATUS_AREA_PX-31,K_TICK);
 	}
       }
       // Y
@@ -8292,8 +8491,9 @@ namespace xcas {
 	sprint_double(ch,d);
 	delta=int(vertical_pixels*(window_ymax-d)/(window_ymax-window_ymin));
 	if (delta>=taille && delta<=vertical_pixels-taille){
-	  fl_line(horizontal_pixels-5,STATUS_AREA_PX+delta,horizontal_pixels-1,STATUS_AREA_PX+delta,_RED);
-	  text_print(10,ch,horizontal_pixels-strlen(ch)*9,STATUS_AREA_PX+delta+taille,_RED);
+	  fl_line(horizontal_pixels-5,STATUS_AREA_PX+delta,horizontal_pixels-1,STATUS_AREA_PX+delta,K_AXIS);
+	  ktick(ch);
+	  text_print(10,ch,horizontal_pixels-text_width(10,ch)-3,STATUS_AREA_PX+delta+taille,K_TICK);
 	}
       }
     }
@@ -8414,15 +8614,21 @@ namespace xcas {
 #else
       logo_turtle turtle=turtleptr->back();
 #endif
-      drawRectangle(deltax+horizontal_pixels,deltay,LCD_WIDTH_PX-horizontal_pixels,2*COORD_SIZE,_YELLOW);
-      // drawRectangle(deltax, deltay, LCD_WIDTH_PX, LCD_HEIGHT_PX,COLOR_BLACK);
-      char buf[32];
-      sprintf(buf,"x %i   ",int(turtle.x+.5));
-      text_print(18,buf,deltax+horizontal_pixels,deltay+(2*COORD_SIZE)/3-2,COLOR_BLACK,_YELLOW);
-      sprintf(buf,"y %i   ",int(turtle.y+.5));
-      text_print(18,buf,deltax+horizontal_pixels,deltay+(4*COORD_SIZE)/3-3,COLOR_BLACK,_YELLOW);
-      sprintf(buf,"t %i   ",int(turtle.theta+.5));
-      text_print(18,buf,deltax+horizontal_pixels,deltay+2*COORD_SIZE-4,COLOR_BLACK,_YELLOW);
+      { // redesign : carte de position de la tortue (x, y, cap)
+        int cx=deltax+horizontal_pixels, cw=LCD_WIDTH_PX-horizontal_pixels, ch=2*COORD_SIZE, cy=deltay+18;
+        kui::fill(cx,cy,cw,ch,kui::SURFACE);
+        kui::box(cx+3,cy+3,cw-6,ch-6,8,kui::SURFACE2,kui::BORDER,kui::SURFACE);
+        const char * lab[3]={"x","y","cap"};
+        int val[3]={int(turtle.x+.5),int(turtle.y+.5),int(turtle.theta+.5)};
+        int rh=(ch-10)/3;
+        for (int k=0;k<3;k++){
+          char buf[32]; sprintf(buf,k==2?"%i°":"%i",val[k]);
+          int ry=cy+5+k*rh+(rh-16)/2;
+          kui::text(cx+9,ry,lab[k],kf_ui_10,kui::TEXT3,kui::SURFACE2);
+          int w=kui::width(buf,kf_ui_11m);
+          kui::text(cx+cw-9-w,ry,buf,kf_ui_11m,kui::TEXT,kui::SURFACE2);
+        }
+      }
     }
     // draw turtle Logo
     if (turtleptr){
@@ -8631,7 +8837,7 @@ namespace xcas {
 #ifdef NSPIRE_NEWLIB
     DefineStatusMessage((char*)"+-: zoom, pad: move, esc: quit", 1, 0, 0);
 #else
-    DefineStatusMessage((char*)"+-: zoom, pad: move, EXIT: quit", 1, 0, 0);
+    DefineStatusMessage((char*)((lang==1)?"Graphe":"Graph"), 1, 0, 0);
 #endif
     DisplayStatusArea();
     int saveprecision=gr.precision;
@@ -8651,7 +8857,12 @@ namespace xcas {
       gr.precision=saveprec;
       DisplayStatusArea();
 #ifdef NUMWORKS
-      os_draw_string(0,LCD_HEIGHT_PX-STATUS_AREA_PX-17,COLOR_BLACK,COLOR_WHITE,"toolbox: cfg");
+      {
+        static const char * const hk[4]={"+ −","↑↓←→","Toolbox","EXE"};
+        static const char * const hl[4]={"Zoom","Déplacer","Menu","Quitter"};
+        static const kui::KeyType ht[4]={kui::KEY_PLAIN,kui::KEY_PLAIN,kui::KEY_PLAIN,kui::KEY_PRIMARY};
+        kui::hints(hk,hl,ht);
+      }
 #else
       os_draw_string(0,LCD_HEIGHT_PX-STATUS_AREA_PX-17,COLOR_BLACK,COLOR_WHITE,"menu: cfg");
 #endif
@@ -8972,7 +9183,7 @@ namespace xcas {
 #ifdef NSPIRE_NEWLIB
     DefineStatusMessage((char*)"+-: zoom, pad: move, esc: quit", 1, 0, 0);
 #else
-    DefineStatusMessage((char*)"+-: zoom, pad: move, EXIT: quit", 1, 0, 0);
+    DefineStatusMessage((char*)((lang==1)?"Graphe":"Graph"), 1, 0, 0);
 #endif
     DisplayStatusArea();
     bool redraw=true;
@@ -9026,7 +9237,200 @@ namespace xcas {
     if (input_key==KEY_CHAR_FRAC) input_key=KEY_CTRL_F14;
   }
 
+
+  // ------------------------------------------------------------------
+  // Redesign : tableaux de variation (résultat de tabvar)
+  // Matrice giac : ligne x (valeurs / cases vides), ligne y' (signes),
+  // ligne y (valeurs + "inc"/"dec"), ligne y'' facultative ("+ (U)"/"- (^)").
+  // ------------------------------------------------------------------
+  static bool ktv_raw=false; // OK : afficher la matrice brute dans l'éditeur 2D
+  static bool ktv_isstr(const gen & g,const char * s){ return g.type==_STRNG && *g._STRNGptr==s; }
+  static bool ktv_empty(const gen & g){ return g.type==_STRNG && g._STRNGptr->empty(); }
+  static bool ktv_is(const gen & g){
+    if (g.type!=_VECT) return false;
+    const vecteur & v=*g._VECTptr;
+    if (v.size()<3 || v.size()>4) return false;
+    size_t L=0;
+    for (size_t i=0;i<v.size();i++){
+      if (v[i].type!=_VECT) return false;
+      if (i==0) L=v[i]._VECTptr->size(); else if (v[i]._VECTptr->size()!=L) return false;
+    }
+    if (L<3) return false;
+    for (size_t i=0;i<v.size();i++){
+      const vecteur & r=*v[i]._VECTptr;
+      for (size_t j=1;j<L;j++) if (ktv_isstr(r[j],"inc") || ktv_isstr(r[j],"dec")) return true;
+    }
+    return false;
+  }
+  static void ktv_replace(string & s,const char * a,const char * b){
+    size_t la=strlen(a),lb=strlen(b),p=0;
+    while ((p=s.find(a,p))!=string::npos){ s.replace(p,la,b); p+=lb; }
+  }
+  static string ktv_pretty(string s){
+    ktv_replace(s,"+infinity","+∞"); ktv_replace(s,"-infinity","−∞"); ktv_replace(s,"infinity","∞");
+    // « oo » (infini en mode Python) seulement comme mot isolé
+    for (size_t p=0;(p=s.find("oo",p))!=string::npos;){
+      bool l = p>0 && (isalnum((unsigned char)s[p-1]) || s[p-1]=='_');
+      bool r = p+2<s.size() && (isalnum((unsigned char)s[p+2]) || s[p+2]=='_');
+      if (!l && !r){ s.replace(p,2,"∞"); p+=3; } else p+=2;
+    }
+    // equal(a,b) → a = b
+    if (s.size()>7 && s.compare(0,6,"equal(")==0 && s[s.size()-1]==')'){
+      int depth=0; size_t comma=string::npos;
+      for (size_t i=6;i<s.size()-1;i++){ char c=s[i]; if (c=='('||c=='[') depth++; else if (c==')'||c==']') depth--; else if (c==',' && depth==0){ comma=i; break; } }
+      if (comma!=string::npos) s=s.substr(6,comma-6)+" = "+s.substr(comma+1,s.size()-comma-2);
+    }
+    ktv_replace(s,"**2","²"); ktv_replace(s,"**3","³"); ktv_replace(s,"**","^");
+    ktv_replace(s,"exp(1)","e"); ktv_replace(s,"exp(2)","e²"); ktv_replace(s,"exp(3)","e³");
+    ktv_replace(s,"sqrt(","√("); ktv_replace(s,"^2","²"); ktv_replace(s,"^3","³");
+    // √(12) → √12 quand l'argument est un nombre
+    for (size_t p=0;(p=s.find("√(",p))!=string::npos;){
+      size_t q=p+4; // « √ » fait 3 octets
+      size_t e=q; while (e<s.size() && isdigit((unsigned char)s[e])) e++;
+      if (e>q && e<s.size() && s[e]==')'){ s.erase(e,1); s.erase(p+3,1); }
+      p+=3;
+    }
+    ktv_replace(s,"*"," · "); ktv_replace(s,"-","−");
+    return s;
+  }
+  static string ktv_str(const gen & g,GIAC_CONTEXT){
+    return ktv_pretty(g.type==_STRNG ? *g._STRNGptr : g.print(contextptr));
+  }
+
+  // renvoie 0 pour quitter, 1 pour ouvrir la matrice brute
+  static int ktabvar_view(const gen & g,GIAC_CONTEXT){
+    using namespace kui;
+    const vecteur & v=*g._VECTptr;
+    int nr=v.size(), L=v[0]._VECTptr->size();
+    int rx=0, rs=-1, ry=-1, rc=-1;
+    for (int i=1;i<nr;i++){
+      const vecteur & r=*v[i]._VECTptr;
+      for (int j=1;j<L;j++){
+        if (ktv_isstr(r[j],"inc")||ktv_isstr(r[j],"dec")) ry=i;
+        if (ktv_isstr(r[j],"+ (U)")||ktv_isstr(r[j],"- (^)")) rc=i;
+      }
+    }
+    for (int i=1;i<nr;i++) if (i!=ry && i!=rc && rs<0) rs=i;
+    // rôles des lignes affichées, dans l'ordre : x, y', y, y''
+    int rows[4], nrows=0; rows[nrows++]=rx; if (rs>=0) rows[nrows++]=rs; if (ry>=0) rows[nrows++]=ry; if (rc>=0) rows[nrows++]=rc;
+    const int RH_SMALL=22, RH_VAR=58;
+    // largeur des colonnes
+    vector<int> cw(L,0); vector<bool> point(L,false);
+    for (int j=1;j<L;j++){
+      point[j] = !ktv_empty((*v[rx]._VECTptr)[j]);
+      if (point[j]){
+        int w=22;
+        for (int k=0;k<nrows;k++){
+          const gen & c=(*v[rows[k]]._VECTptr)[j];
+          if (c.type==_STRNG && (*c._STRNGptr=="inc"||*c._STRNGptr=="dec")) continue;
+          int tw=width(ktv_str(c,contextptr).c_str(),kf_ui_11m)+10;
+          if (tw>w) w=tw;
+        }
+        cw[j]= w>96 ? 96 : w; // valeurs très longues abrégées (matrice complète via OK)
+      }
+      else cw[j]=34;
+    }
+    { // ajuste : resserre les colonnes de flèches si le tableau déborde
+      int tot=0, nint=0; for (int j=1;j<L;j++){ tot+=cw[j]; if (!point[j]) nint++; }
+      int avail=304-28-4;
+      if (tot>avail && nint){
+        int shrink=(tot-avail+nint-1)/nint; if (shrink>12) shrink=12;
+        for (int j=1;j<L;j++) if (!point[j]) cw[j]-=shrink;
+      }
+    }
+    string fy = ry>=0 ? ktv_str((*v[ry]._VECTptr)[0],contextptr) : "";
+    string fd = rs>=0 ? ktv_str((*v[rs]._VECTptr)[0],contextptr) : "";
+    if (fy.size()>6 && fy.compare(0,5,"y = (")==0 && fy[fy.size()-1]==')') fy="y = "+fy.substr(5,fy.size()-6);
+    if (fy.find(" = ")==string::npos) ktv_replace(fy,"=", " = ");
+    if (fd.find(" = ")==string::npos) ktv_replace(fd,"=", " = ");
+    ktv_replace(fd,"y'","y′");
+    int first=1; // première colonne visible
+    const int TX=8, TW=304, LW=28, TY=18+44;
+    for (;;){
+      fill(0,18,320,198,SURFACE);
+      text(12,24,"Tableau de variations",kf_ui_13sb,TEXT,SURFACE);
+      text_clip(12,41,(fy+(fd.empty()?"":"     "+fd)).c_str(),kf_ui_11m,TEXT2,SURFACE,308);
+      int TH=0; for (int k=0;k<nrows;k++) TH += rows[k]==ry ? RH_VAR : RH_SMALL;
+      box(TX,TY,TW,TH,8,SURFACE,BORDER_STRONG,SURFACE);
+      fill(TX+1,TY+4,LW,TH-8,SURFACE2); fill(TX+4,TY+1,LW-3,TH-2,SURFACE2);
+      vline(TX+LW+1,TY+1,TH-2,BORDER_STRONG);
+      // colonnes visibles
+      int xend=TX+TW-2, x=TX+LW+2, last=first;
+      vector<int> cx(L,-1);
+      for (int j=first;j<L;j++){ if (x+cw[j]>xend) break; cx[j]=x; x+=cw[j]; last=j; }
+      int y=TY;
+      for (int k=0;k<nrows;k++){
+        int r=rows[k], rh = r==ry ? RH_VAR : RH_SMALL;
+        const vecteur & row=*v[r]._VECTptr;
+        const char * lab = r==rx ? "x" : r==ry ? "y" : r==rs ? "y′" : "y″";
+        int lw=width(lab,r==rx?kf_math_11i:kf_ui_12m);
+        text(TX+1+(LW-lw)/2,y+(rh-16)/2,lab,r==rx?kf_math_11i:kf_ui_12m,TEXT,SURFACE2);
+        if (k>0) hline(TX+LW+2,y,TW-LW-3,k==1?BORDER_STRONG:BORDER);
+        for (int j=first;j<=last;j++){
+          const gen & c=row[j];
+          int x0=cx[j], w=cw[j];
+          if (c.type==_STRNG){
+            const string & st=*c._STRNGptr;
+            if (st=="X"){ hatch(x0+1,y+1,w-2,rh-2,BORDER_STRONG,SURFACE); continue; }
+            if (st=="||"){ vline(x0+w/2-2,y+1,rh-2,TEXT); vline(x0+w/2+1,y+1,rh-2,TEXT); continue; }
+            if (r==ry && (st=="inc"||st=="dec")){
+              bool inc=st=="inc";
+              float lo=y+rh-12, hi=y+12;
+              arrow(x0+3,inc?lo:hi,x0+w-4,inc?hi:lo,PRIMARY,SURFACE);
+              continue;
+            }
+            if (r==rc){
+              cupcap(x0+w/2.0f,y+rh/2.0f+(st=="+ (U)"?1.0f:-1.0f),st=="+ (U)",PRIMARY,SURFACE);
+              continue;
+            }
+            if (st=="+"||st=="-"){
+              const char * sg = st=="+" ? "+" : "−";
+              int tw=width(sg,kf_ui_13sb);
+              text(x0+(w-tw)/2,y+(rh-18)/2,sg,kf_ui_13sb,st=="+"?SUCCESS:DANGER,SURFACE);
+              continue;
+            }
+            if (st.empty()) continue;
+          }
+          string t=ktv_str(c,contextptr);
+          int tw=width(t.c_str(),kf_ui_11m);
+          int ty=y+(rh-16)/2;
+          if (r==ry){
+            // valeur en haut ou en bas selon les flèches voisines
+            const gen * lft = j>1 ? &row[j-1] : 0, * rgt = j<L-1 ? &row[j+1] : 0;
+            bool high = (lft && ktv_isstr(*lft,"inc")) || (rgt && ktv_isstr(*rgt,"dec"));
+            bool low = (lft && ktv_isstr(*lft,"dec")) || (rgt && ktv_isstr(*rgt,"inc"));
+            if (high && !low) ty=y+4; else if (low && !high) ty=y+rh-20;
+          }
+          bool zero = r==rs && t=="0";
+          if (tw>w-6) text_clip(x0+3,ty,t.c_str(),kf_ui_11m,TEXT,SURFACE,x0+w-3);
+          else text(x0+(w-tw)/2,ty,t.c_str(),kf_ui_11m,zero?TEXT2:TEXT,SURFACE);
+        }
+        y+=rh;
+      }
+      // indicateurs de défilement
+      if (first>1) text(TX+LW+4,TY+TH+2,"‹ plus",kf_ui_10,PRIMARY,SURFACE);
+      if (last<L-1){ int w=width("plus ›",kf_ui_10); text(TX+TW-w-2,TY+TH+2,"plus ›",kf_ui_10,PRIMARY,SURFACE); }
+      {
+        static const char * const hk[4]={"←→","OK",0,"EXE"};
+        static const char * const hl[4]={"Défiler","Matrice",0,"Quitter"};
+        static const KeyType ht[4]={KEY_PLAIN,KEY_PLAIN,KEY_PLAIN,KEY_PRIMARY};
+        hints(hk,hl,ht);
+      }
+      int key; GetKey(&key);
+      if (key==KEY_SHUTDOWN || key==KEY_CTRL_EXE || key==KEY_CTRL_EXIT || key==KEY_CTRL_AC) return 0;
+      if (key==KEY_CTRL_OK) return 1;
+      if (key==KEY_CTRL_RIGHT && last<L-1) first = first+2<L ? first+2 : first;
+      if (key==KEY_CTRL_LEFT && first>1) first = first-2>=1 ? first-2 : 1;
+    }
+  }
+
   giac::gen eqw(const giac::gen & ge,bool editable,GIAC_CONTEXT){
+    if (!ktv_raw && ktv_is(ge)){ // redesign : vrai tableau de variations
+      if (ktabvar_view(ge,contextptr)==1){
+        ktv_raw=true; giac::gen r=eqw(ge,editable,contextptr); ktv_raw=false; return r;
+      }
+      return ge;
+    }
     if (ge.is_symb_of_sommet(at_equal) && ge._SYMBptr->feuille.type==_VECT && ge._SYMBptr->feuille._VECTptr->size()==2 && ge._SYMBptr->feuille._VECTptr->front().type==_INT_ && ge._SYMBptr->feuille._VECTptr->back().type==_INT_){
       global_show_axes=ge._SYMBptr->feuille._VECTptr->back().val;
       return ge;
@@ -9093,7 +9497,7 @@ namespace xcas {
       else
 	set_xcas_status();
 #else
-      DefineStatusMessage((char*)"+-: zoom, pad: move, EXIT: quit", 1, 0, 0);
+      DefineStatusMessage((char*)((lang==1)?"Graphe":"Graph"), 1, 0, 0);
       DisplayStatusArea();
 #endif
       gen value;
@@ -9124,8 +9528,7 @@ namespace xcas {
       menu += "|2 ";
       menu += string(menu_f2);
       menu += "|3 undo|4 edt|5 +-|6 approx";
-      drawRectangle(0,205,LCD_WIDTH_PX,17,22222);
-      PrintMiniMini(0,205,menu.c_str(),0,giac::_BLACK,22222);
+      kui::softkeys_from_legacy(menu.c_str(),false); // redesign
 #endif
       //draw_menu(2);
       clip_ymin=save_clip_ymin;
@@ -11167,13 +11570,13 @@ namespace xcas {
     }
     textY = scroll+(showtitle ? 24 : 0)+text->y; // 24 pixels for title (or not)
     int deltax=0;
-    if (editable){
+    if (editable){ // redesign : marge un peu plus large pour les numéros
       if (v.size()<10){
-	deltax=9;
+	deltax=16;
       }
       else {
 	if (v.size()<100)
-	  deltax=18;
+	  deltax=21;
 	else
 	  deltax=27;
       }
@@ -11249,9 +11652,17 @@ namespace xcas {
 	drawRectangle(textX, textY, LCD_WIDTH_PX, dh, COLOR_WHITE);
       }
       if (editable && textY>=(showtitle?24:0)){
+	// redesign : marge des numéros de ligne (fond gris, numéro courant en indigo)
 	char line_s[16];
 	sprint_int(line_s,cur+1);
-	os_draw_string_small(textX,textY,COLOR_MAGENTA,_WHITE,line_s);
+	int gw=deltax-3, lh=dh>0?dh:text->lineHeight+v[cur].lineSpacing;
+	if (gw>4){
+	  kui::fill(textX,textY+18,gw,lh,kui::SURFACE2);
+	  int w=kui::width(line_s,kf_ui_10);
+	  kui::text(textX+gw-w-3,textY+18+1,line_s,kf_ui_10,cur==textline?kui::PRIMARY:kui::TEXT3,kui::SURFACE2);
+	}
+	else
+	  os_draw_string_small(textX,textY,COLOR_MAGENTA,_WHITE,line_s);
       }
       textX=text->x+deltax;
       int tlen = v[cur].s.size();
@@ -11484,7 +11895,7 @@ namespace xcas {
     if (editable){
       waitforvblank();
       drawRectangle(0,205,LCD_WIDTH_PX,17,44444);
-      PrintMiniMini(0,205,text->python>0?"shift-1 test|2 loop|3 undo|4 misc|5 +-|6 logo|7 lin|8 list|9arit":"shift-1 test|2 loop|3 undo|4 misc|5 +-|6 logo|7 matr|8 cplx",4,44444,giac::_BLACK);
+      kui::softkeys_from_legacy(text->python>0?"shift-1 test|2 loop|3 undo|4 misc|5 +-|6 logo|7 lin|8 list|9arit":"shift-1 test|2 loop|3 undo|4 misc|5 +-|6 logo|7 matr|8 cplx", false);
       //draw_menu(1);
     }
 #ifdef SCROLLBAR
@@ -11801,52 +12212,28 @@ namespace xcas {
       return false;
     const char * howto=0,*syntax=0,*related=0,*examples=0;
     if (l1>0 && has_static_help(cmdname,lang | 0x100,howto,syntax,related,examples) && examples){
-      // display tooltip
-      if (x<0)
-	x=os_draw_string(0,y,_BLACK,1234,editline,true); // fake print -> x position // replaced cmdline by editline so that tooltip is at end
-      x+=2;
-      y+=4;
-      drawRectangle(x,y,6,10,65529);
-      draw_line(x,y,x+6,y,_BLACK);
-      draw_line(x,y,x+3,y+3,_BLACK);
-      draw_line(x+6,y,x+3,y+3,_BLACK);
-      y-=4;
-      x+=7;
-      int bg=65529; // background
-      x=os_draw_string_small(x,y,_BLACK,bg,": ",false);
-      if (howto && strlen(howto)){
-#ifdef NSPIRE_NEWLIB
-	y-=2;
-#endif
-	os_draw_string_small(x,y,_BLACK,bg,
-#ifdef NUMWORKS
-			     remove_accents(howto).c_str(),
-#else
-			     howto,
-#endif
-			     false);
-#ifdef NSPIRE_NEWLIB
-	y+=12;
-#else
-	y+=11;
-#endif
-      }
+      // Redesign : fiche d'aide (composant HelpCard) au-dessus ou sous la ligne de saisie
+      using namespace kui;
+      const int OY=18, H=40;
+      int ly=y+OY;                       // haut de la ligne courante (écran)
+      int cy = (ly-H-2 >= STATUS_H+2) ? ly-H-2 : ly+20;
+      box(6,cy,308,H,8,SURFACE,BORDER_STRONG,SURFACE);
+      int x1=text(14,cy+5,cmdname,kf_mono_sm,SYN_FN,SURFACE);
+      int kx=314-8-keycap_width("OK")-4-width("Insérer",kf_ui_10);
+      if (howto && strlen(howto))
+        text_clip(x1+8,cy+6,howto,kf_ui_10,TEXT2,SURFACE,kx-8);
+      int ex=keycap(kx,cy+5,"OK",KEY_PLAIN,SURFACE);
+      text(ex+4,cy+5,"Insérer",kf_ui_10,TEXT3,SURFACE);
       string toolt;
       if (related && strlen(related)){
-	toolt += cmdname;
-	toolt += '(';
-	if (syntax && strlen(syntax))
-	  toolt += syntax;
-	else
-	  toolt += "arg";
+	toolt += cmdname; toolt += '(';
+	toolt += (syntax && strlen(syntax)) ? syntax : "arg";
 	toolt += ')';
-	toolt += ' ';
-	if (related)
-	  toolt += related;
       }
       else
 	toolt+=examples;
-      os_draw_string_small(x,y,_BLACK,bg,toolt.c_str(),false);
+      fill(12,cy+21,296,14,SURFACE2);
+      text_clip(16,cy+21,toolt.c_str(),kf_mono_s.cell?kf_ui_10:kf_ui_10,TEXT,SURFACE2,304);
       return true;
     }
     return false;
@@ -12472,7 +12859,7 @@ namespace xcas {
 		show_status(text,search,replace);
 		warn_python(text->python,false);
 		drawRectangle(0,205,LCD_WIDTH_PX,17,44444);
-		PrintMiniMini(0,205,"shift-1 test|2 loop|3 undo|4 misc|5 +- |      ",4,44444,giac::_BLACK);
+		kui::softkeys_from_legacy("shift-1 test|2 loop|3 undo|4 misc|5 +- |      ", false);
 	      }
 	    }
 	  }
@@ -12484,7 +12871,7 @@ namespace xcas {
 	python_compat(text->python,contextptr);
 	warn_python(text->python,false);
 	drawRectangle(0,205,LCD_WIDTH_PX,17,44444);
-	PrintMiniMini(0,205,"shift-1 test|2 loop|3 undo|4 misc|5 +- |      ",4,44444,giac::_BLACK);
+	kui::softkeys_from_legacy("shift-1 test|2 loop|3 undo|4 misc|5 +- |      ", false);
 	continue;
       case KEY_CTRL_F2:
 	if (clipline<0)
@@ -12602,7 +12989,12 @@ namespace xcas {
     msg += session_filename;
     if (console_changed)
       msg += " *";
-    statuslinemsg(msg.c_str());
+    // Redesign : barre d'état structurée (titre · fichier · interpréteur · angle)
+    {
+      const char * interp = i<0 ? "JS" : (i&4) ? "Python" : i==0 ? "Xcas" : i==1 ? "Py ^=**" : "Py ^=xor";
+      string sub = string("· ") + session_filename + (console_changed ? " •" : "");
+      kui::status("Calcul", sub.c_str(), interp, angle_radian(contextptr) ? "RAD" : "DEG");
+    }
     set_xcas_status();
     Bdisp_PutDisp_DD();
   }
@@ -14559,7 +14951,7 @@ namespace xcas {
       filename += ".py";
 #endif
     if (!load_console_state_smem(filename.c_str(),contextptr)){
-      if (confirm("OK: Francais, Back: English","set_language(1|0)")==KEY_CTRL_F6)
+      if (confirm("OK: Français, Back: English","Langue · Language")==KEY_CTRL_F6)
 	lang=0;
       numworks_certify_internal();
       Bdisp_AllClr_VRAM();
@@ -14666,25 +15058,11 @@ namespace xcas {
 #endif
     if (!load_console_state_smem(filename.c_str(),contextptr)){
 #ifdef NUMWORKS
-      if (confirm("OK: Francais, Back: English","set_language(1|0)")==KEY_CTRL_F6)
+      if (confirm("OK: Français, Back: English","Langue · Language")==KEY_CTRL_F6)
 	lang=0;
       Bdisp_AllClr_VRAM();
 #endif
-      int x=0,y=0;
-      PrintMini(x,y,"KhiCAS 1.6 (c) 2020 B. Parisse",TEXT_MODE_NORMAL, COLOR_BLACK, COLOR_WHITE);
-      y +=18;
-      PrintMini(x,y,"et al, License GPL 2",TEXT_MODE_NORMAL,COLOR_BLACK, COLOR_WHITE);
-      y += 18;
-#ifdef NSPIRE_NEWLIB
-      PrintMini(x,y,((lang==1)?"Taper menu plusieurs fois":"Type menu several times"),TEXT_MODE_NORMAL,COLOR_BLACK, COLOR_WHITE);
-#else
-      PrintMini(x,y,((lang==1)?"Taper HOME plusieurs fois":"Type HOME several times"),TEXT_MODE_NORMAL,COLOR_BLACK, COLOR_WHITE);
-#endif
-      y += 18;
-      PrintMini(x,y,((lang==1)?"pour quitter KhiCAS.":"to leave KhiCAS."),TEXT_MODE_NORMAL,COLOR_BLACK, COLOR_WHITE);
-      y += 18;
-      PrintMini(x,y,(lang==1)?"Si le calcul formel est interdit":"If CAS is forbidden!",TEXT_MODE_NORMAL, COLOR_RED, COLOR_WHITE);
-      y += 18;
+      kwelcome(); // redesign : écran d'accueil (logo, crédits, bannière examen)
 #ifdef NSPIRE_NEWLIB
       PrintMini(x,y,(lang==1)?"quittez Khicas (doc doc doc)":"Leave Khicas (doc doc doc)",TEXT_MODE_NORMAL, COLOR_RED, COLOR_WHITE);
       if (confirm("Interpreter? enter: Xcas, esc: MicroPython",(lang==1?"Peut se modifier depuis menu configuration":"May be changed later from menu configuration"),false,130)==KEY_CTRL_F6){
@@ -14698,8 +15076,7 @@ namespace xcas {
 	*logptr(contextptr) << "Xcas interpreter, Python compatible mode\n";
       }
 #else
-      PrintMini(x,y,(lang==1)?"quittez Khicas (HOME HOME HOME)":"Leave Khicas (HOME HOME HOME)",TEXT_MODE_NORMAL, COLOR_RED, COLOR_WHITE);
-      if (confirm("Interpreter? OK: Xcas, Back: MicroPython",(lang==1?"Peut se modifier depuis menu configuration":"May be changed later from menu configuration"),false,130)==KEY_CTRL_F6){
+      if (confirm(lang==1?"Interpréteur ? OK: Xcas, Back: MicroPython":"Interpreter? OK: Xcas, Back: MicroPython",(lang==1?"Modifiable ensuite dans Configuration":"May be changed later in Configuration"),false,130)==KEY_CTRL_F6){
 	python_compat(4,contextptr);
 	xcas_python_eval=1;
 	*logptr(contextptr) << "Micropython interpreter\n";
@@ -14988,6 +15365,7 @@ namespace xcas {
 	return key;
       if (keytooltip){
 	keytooltip=false;
+	Console_Disp(1,contextptr); // redesign : efface la fiche d'aide
 	if (key==KEY_CTRL_EXIT){
 	  Console_Disp(1,contextptr);
 	  continue;
@@ -15148,19 +15526,19 @@ namespace xcas {
 	  if (nspire_exam_mode==2) smallmenuitems[1].text = (char*)(lang==1?"Sauvegarde desactivee":"Saving disabled");
 	  if (exam_mode || nspire_exam_mode==2)
 	    smallmenuitems[2].text = (char *) "";
-	  smallmenuitems[3].text = (char*) ((lang==1)?"Charger session":"Load session");
+	  smallmenuitems[3].text = (char*) ((lang==1)?"Charger une session":"Load session");
 	  smallmenuitems[4].text = (char*)((lang==1)?"Nouvelle session":"New session");
-	  smallmenuitems[5].text = (char*)((lang==1)?"Executer session":"Run session");
-	  smallmenuitems[6].text = (char*)((lang==1)?"Editeur script":"Script editor");
-	  smallmenuitems[7].text = (char*)((lang==1)?"Ouvrir script":"Open script");
-	  smallmenuitems[8].text = (char*)((lang==1)?"Executer script":"Run script");
-	  smallmenuitems[9].text = (char*)((lang==1)?"Effacer historique (0)":"Clear history");
-	  smallmenuitems[10].text = (char*)((lang==1)?"Effacer script (e^)":"Clear script");
-	  smallmenuitems[11].text = (char*)"Configuration/examen (ln)";
-	  smallmenuitems[12].text = (char *) ((lang==1)?"Aide interface (log)":"Shortcuts");
-	  smallmenuitems[13].text = (char*)((lang==1)?"Editer matrice (i)":"Matrix editor");
-	  smallmenuitems[14].text = (char*) ((lang==1)?"Creer parametre (,)":"Create slider (,)");
-	  smallmenuitems[15].text = (char*) ((lang==1)?"A propos (x^y)":"About");
+	  smallmenuitems[5].text = (char*)((lang==1)?"Exécuter la session":"Run session");
+	  smallmenuitems[6].text = (char*)((lang==1)?"Éditeur de script":"Script editor");
+	  smallmenuitems[7].text = (char*)((lang==1)?"Ouvrir un script":"Open script");
+	  smallmenuitems[8].text = (char*)((lang==1)?"Exécuter le script":"Run script");
+	  smallmenuitems[9].text = (char*)((lang==1)?"Effacer l'historique (0)":"Clear history");
+	  smallmenuitems[10].text = (char*)((lang==1)?"Effacer le script (e^)":"Clear script");
+	  smallmenuitems[11].text = (char*)"Configuration et examen (ln)";
+	  smallmenuitems[12].text = (char *) ((lang==1)?"Aide · raccourcis (log)":"Shortcuts");
+	  smallmenuitems[13].text = (char*)((lang==1)?"Éditer une matrice (i)":"Matrix editor");
+	  smallmenuitems[14].text = (char*) ((lang==1)?"Créer un paramètre (,)":"Create slider (,)");
+	  smallmenuitems[15].text = (char*) ((lang==1)?"À propos (x^y)":"About");
 #ifdef NSPIRE_NEWLIB
 	  smallmenuitems[16].text = (char*) ((lang==1)?"Quitter (menu)":"Quit");
 #else
@@ -15661,7 +16039,7 @@ namespace xcas {
       cfg++;
     }
     if(entry.count > 0) {
-      ret = Console_Draw_FMenu(key, &entry,cfg,active_app);
+      ret = Console_Draw_FMenu(key, &entry,cfg_,active_app); // redesign : cfg_ (début de la config), cfg pointait sur la fin
       // cout << "console0 " << (unsigned) ret << endl;
       if (!ret) return ret;
       if (!strcmp("periodic_table",ret)){
@@ -15722,77 +16100,99 @@ namespace xcas {
   }
 
   //Draws and runs the asked for menu.
+  // Redesign : menu ⇧N en panneau du bas (écran 05 du Figma).
+  // Onglets (← → change de menu), liste 1…8 de haut en bas avec description, voile sur le shell.
+  static int fmenu_titles(const char * cfg,int keys[16],char titles[16][12]){
+    int n=0;
+    const char * p=cfg;
+    while (*p && n<16){
+      const char * e=p; while (*e && *e!='\n' && *e!='\r') e++;
+      if (p[0]=='F' && e-p>=2){
+        // vérifie que le menu n'est pas « reserved »
+        const char * q=e; while (*q=='\n'||*q=='\r') q++;
+        if (strncmp(q,"reserved",8)!=0){
+          keys[n]=KEY_CTRL_F1+(p[1]-'1');
+          const char * t=p+2; while (*t==' ') t++;
+          char raw[12]; int l=0; while (t<e && l<11 && *t!=' ') raw[l++]=*t++;
+          raw[l]=0;
+          strncpy(titles[n],kui::friendly(raw),11); titles[n][11]=0;
+          n++;
+        }
+      }
+      p=*e?e+1:e;
+    }
+    // tri par numéro de touche
+    for (int i=1;i<n;i++) for (int j=i;j>0 && keys[j]<keys[j-1];j--){
+      int t=keys[j]; keys[j]=keys[j-1]; keys[j-1]=t;
+      char tmp[12]; strcpy(tmp,titles[j]); strcpy(titles[j],titles[j-1]); strcpy(titles[j-1],tmp);
+    }
+    return n;
+  }
+
   const char * Console_Draw_FMenu(int key, struct FMenu* menu,char * cfg,int active_app)
   {
-    int i, nb_entries = 0, selector = 0, position_number, position_x, ret, longest = 0;
-    int input_key;
-    char quick[] = "*: ";
-    int quick_len = 2;
-    char **entries;
-    DISPBOX box,box3;
-    
-    position_number = key - KEY_CTRL_F1;
-    if (position_number<0 || position_number>=5)
-      position_number=4;
-    
-    entries  = menu->str;
-    nb_entries = menu->count;
-    
-    for(i=0; i<nb_entries; i++)
-      if(strlen(entries[i]) > longest) longest = strlen(entries[i]);
-    if (longest>15)
-      longest=15;
-    // screen resolution Graph90 384x(216-24), Graph35 128x64
-    // factor 3x3
-    position_x = 17*position_number;
-    if(position_x + longest*4 + quick_len*4 > 115) position_x = 115 - longest*4 - quick_len*4;
-    
-    box.left = position_x;
-    box.right = position_x + longest*4 + quick_len*4  + 6;
-    box.bottom = 63-7;
-    box.top = 63-7-nb_entries*7;
-    box3.left=3*box.left;
-    box3.right=3*box.right;
-    box3.bottom=3*box.bottom+22;
-    box3.top=3*box.top+20;
-  
-    drawRectangle(box3.left,box3.top,box3.right-box3.left,box3.bottom-box3.top,COLOR_WHITE);
-    drawLine(box3.left, box3.top, box3.right, box3.top,COLOR_BLACK);
-    drawLine(box3.left, box3.bottom, box3.left, box3.top,COLOR_BLACK);
-    drawLine(box3.right, box3.bottom, box3.right, box3.top,COLOR_BLACK);
-    drawLine(box3.left, box3.bottom, box3.right, box3.bottom,COLOR_BLACK);
-    
-    // Cursor_SetFlashOff();
-    
-    for (;;){
-      for(i=0; i<nb_entries; i++) {
-	quick[0] = '0'+(i+1);
-	PrintMini(3+position_x, box.bottom-7*i, quick, 0);
-	PrintMini(3+position_x+quick_len*4, box.bottom-7*i, entries[i], 0);
+    using namespace kui;
+    int nb_entries=menu->count, selector=0, input_key;
+    char **entries=menu->str;
+    int tkeys[16]; char titles[16][12];
+    int nt=fmenu_titles(cfg,tkeys,titles), cur=-1;
+    for (int i=0;i<nt;i++) if (tkeys[i]==key) cur=i;
+    const int ROW=18, HEAD=24;
+    int top=SOFTBAR_Y-(6+HEAD+nb_entries*ROW+4);
+    if (top<STATUS_H+8) top=STATUS_H+8;
+    dim(0,STATUS_H,320,top-STATUS_H+12);
+    box(0,top,320,SOFTBAR_Y-top+12,12,SURFACE,BORDER_STRONG,SCRIM);
+    softkeys_redraw(true);
+    // onglets
+    {
+      int x=8, first = cur>1 ? cur-1 : 0;
+      fill(4,top+5,312,18,SURFACE);
+      for (int i=first;i<nt && x<312;i++){
+        int w=width(titles[i],kf_ui_11m)+14;
+        if (x+w>312) break;
+        x=chip(x,top+6,titles[i],i==cur,SURFACE)+4;
       }
-      PrintMini(3+position_x+quick_len*4,box.bottom-7*selector, entries[selector], 4);
+      if (cur>=0 && x<300){ /* espace libre */ }
+    }
+    for (;;){
+      for (int i=0;i<nb_entries;i++){
+        int ry=top+6+HEAD+i*ROW;
+        bool sel=i==selector;
+        uint16_t rb=sel?PRIMARY_SOFT:SURFACE;
+        fill(6,ry,308,ROW,SURFACE);
+        if (sel) box(6,ry,308,ROW,6,PRIMARY_SOFT,PRIMARY_SOFT,SURFACE);
+        char num[2]={(char)('1'+i),0};
+        int x=keycap(12,ry+2,num,sel?KEY_PRIMARY:KEY_PLAIN,rb)+8;
+        const char * d=describe(entries[i]);
+        int dx=306;
+        if (d){
+          int dw=width(d,kf_ui_10);
+          dx=306-dw;
+          text(dx,ry+2,d,kf_ui_10,sel?PRIMARY:TEXT3,rb);
+        }
+        text_clip(x,ry,entries[i],kf_ui_12,sel?PRIMARY_STRONG:TEXT,rb,dx-6);
+      }
       GetKey(&input_key);
       if (input_key==KEY_PRGM_ACON) Console_Disp(1,0);
-      if (input_key == KEY_CTRL_EXIT || input_key==KEY_CTRL_AC) return 0;
-      if (input_key == KEY_CTRL_UP && selector < nb_entries-1) selector++;	
-      if (input_key == KEY_CTRL_DOWN && selector > 0) selector--;
-      
+      if (input_key == KEY_CTRL_EXIT || input_key==KEY_CTRL_AC) { Console_Disp(1,0); return 0; }
+      if (input_key == KEY_CTRL_DOWN) selector = selector<nb_entries-1 ? selector+1 : 0;
+      if (input_key == KEY_CTRL_UP) selector = selector>0 ? selector-1 : nb_entries-1;
       if (input_key == KEY_CTRL_EXE || input_key==KEY_CTRL_OK) return entries[selector];
-      
       if (input_key >= KEY_CHAR_1 && input_key < KEY_CHAR_1 + nb_entries) return entries[input_key-KEY_CHAR_1];
-      
+      if ((input_key==KEY_CTRL_LEFT || input_key==KEY_CTRL_RIGHT) && cur>=0 && nt>1){
+        int nk=tkeys[(cur+(input_key==KEY_CTRL_RIGHT?1:nt-1))%nt];
+        Console_Disp(1,0);
+        return console_menu(nk,cfg,active_app);
+      }
       translate_fkey(input_key);
-      
       if ( active_app==0 &&
 	   ((input_key >= KEY_CTRL_F1 && input_key <= KEY_CTRL_F6) ||
 	    (input_key >= KEY_CTRL_F7 && input_key <= KEY_CTRL_F16) )
 	   ){
 	Console_Disp(1,0);
-	key=input_key;
-	return console_menu(key,cfg,active_app);
+	return console_menu(input_key,cfg,active_app);
       }
-    } // end while input_key!=EXE/EXIT
-
+    }
     return 0; // never reached
   }
 
@@ -16267,8 +16667,16 @@ namespace xcas {
       menu += xcas_python_eval==1?"|4 edt|5 2d|6 logo|7 lin|8 matr|9arit|0 plt":"|4 edt|5 2d|6 regr|7 matr|8 cplx|9 arit|0 rand";
       int xcas_color=65055,python_color=52832,js_color=63048;
       int interp_color=xcas_python_eval==-1?js_color:(xcas_python_eval==1?python_color:xcas_color);
-      drawRectangle(0,205,LCD_WIDTH_PX,17,interp_color);
-      PrintMiniMini(0,205,menu.c_str(),0,giac::_BLACK,interp_color);
+      (void)interp_color;
+      kui::softkeys_from_legacy(menu.c_str(), false); // barre du bas redessinée
+    }
+    {
+      // Redesign : séparateurs fins entre les calculs + barre de focus sur la ligne en cours
+      for (int j=1; j<LINE_DISP_MAX && j+Start_Line<=Last_Line; j++)
+        if (Line[j+Start_Line].type==LINE_TYPE_INPUT && j!=Cursor.y)
+          kui::hline(4,18+j*vfontsize,312,kui::BORDER);
+      if (Cursor.y>=0 && Cursor.y<LINE_DISP_MAX && !Line[Cursor.y+Start_Line].readonly)
+        kui::fill(0,18+Cursor.y*vfontsize+2,2,vfontsize-4,kui::PRIMARY);
     }
   
     // status, clock,
@@ -16728,53 +17136,38 @@ const AtomDef atomsdefs[] = {
   
 };
   
-void drawAtom(uint8_t id) {
-  int fill = rgb24to16(0xeeeeee);
-
-  switch(atomsdefs[id].type) {
-    case ALKALI_METAL:
-      fill = rgb24to16(0xffaa00);
-      break;
-    case ALKALI_EARTH_METAL:
-      fill = rgb24to16(0xf6f200);
-      break;
-    case LANTHANIDE:
-      fill = rgb24to16(0xffaa8b);
-      break;
-    case ACTINIDE:
-      fill = rgb24to16(0xdeaacd);
-      break;
-    case TRANSITION_METAL:
-      fill = rgb24to16(0xde999c);
-      break;
-    case POST_TRANSITION_METAL:
-      fill = rgb24to16(0x9cbaac);
-      break;
-    case METALLOID:
-      fill = rgb24to16(0x52ce8b);
-      break;
-    case REACTIVE_NONMETAL:
-      fill = rgb24to16(0x00ee00);
-      break;
-    case NOBLE_GAS:
-      fill = rgb24to16(0x8baaff);
-      break;
-    case HALOGEN:
-      fill = rgb24to16(0x00debd);
-      break;
-    default:
-      break;
+// Redesign : couleurs douces par famille (Figma « periodic/* »)
+static uint16_t katom_color(int type){
+  switch(type) {
+    case ALKALI_METAL: return kui::rgb(0xFDE2E1);
+    case ALKALI_EARTH_METAL: return kui::rgb(0xFFEBD2);
+    case LANTHANIDE: return kui::rgb(0xE9F7D9);
+    case ACTINIDE: return kui::rgb(0xF6E4F0);
+    case TRANSITION_METAL: return kui::rgb(0xE3E8FF);
+    case POST_TRANSITION_METAL: return kui::rgb(0xDDF2EC);
+    case METALLOID: return kui::rgb(0xF1E7FB);
+    case REACTIVE_NONMETAL: return kui::rgb(0xE2F4FB);
+    case NOBLE_GAS: return kui::rgb(0xFBE4F3);
+    case HALOGEN: return kui::rgb(0xFFF6CC);
+    default: return kui::SURFACE2;
   }
-
-  if (atomsdefs[id].y >= 7) {
-    drawRectangle(6 + atomsdefs[id].x * 17, 15 + atomsdefs[id].y * 17, 18, 18, fill);
-    stroke_rectangle(6 + atomsdefs[id].x * 17, 15 + atomsdefs[id].y * 17, 18, 18, rgb24to16(0x525552));
-    os_draw_string_small(8 + atomsdefs[id].x * 17, 17 + atomsdefs[id].y * 17, _BLACK, fill, atomsdefs[id].symbol);
-  } else {
-    drawRectangle(6 + atomsdefs[id].x * 17, 6 + atomsdefs[id].y * 17, 18, 18, fill);
-    stroke_rectangle(6 + atomsdefs[id].x * 17, 6 + atomsdefs[id].y * 17, 18, 18, rgb24to16(0x525552));
-    os_draw_string_small(8 + atomsdefs[id].x * 17, 8 + atomsdefs[id].y * 17, _BLACK, fill, atomsdefs[id].symbol);
+}
+static void katom_xy(uint8_t id,int & x,int & y){
+  x=6+atomsdefs[id].x*17;
+  y=18+(atomsdefs[id].y>=7 ? 15 : 6)+atomsdefs[id].y*17; // coordonnées écran
+}
+void drawAtom(uint8_t id,bool sel=false) {
+  int x,y; katom_xy(id,x,y);
+  uint16_t c=katom_color(atomsdefs[id].type);
+  if (sel){
+    kui::box(x-1,y-1,18,18,4,c,kui::PRIMARY,kui::SURFACE);
+    kui::box(x,y,16,16,3,c,kui::PRIMARY,kui::PRIMARY);
   }
+  else
+    kui::box(x,y,16,16,3,c,c,kui::SURFACE);
+  const char * sym=atomsdefs[id].symbol;
+  int w=kui::width(sym,kf_ui_9sb);
+  kui::text(x+(16-w)/2,y+2,sym,kf_ui_9sb,sel?kui::PRIMARY_STRONG:kui::TEXT,c);
 }
 
   int periodic_table(const char * & name,const char * & symbol,char * protons,char * nucleons,char * mass,char * electroneg){
@@ -16783,50 +17176,55 @@ void drawAtom(uint8_t id) {
     const int ATOM_NUMS=sizeof(atomsdefs)/sizeof(AtomDef);
     for (;;){
       if (redraw){
-	if (partial_draw) {
-	  partial_draw = false;
-	  drawRectangle(50, 0, 169, 57, _WHITE);
-	  drawRectangle(0, 185, LCD_WIDTH_PX, 15, _WHITE);
-	} else {
-	  drawRectangle(0,0,LCD_WIDTH_PX,LCD_HEIGHT_PX,_WHITE);
-	}
-#ifdef NSPIRE_NEWLIB
-	os_draw_string_small_(0,200,gettext("enter: tout, P:protons, N:nucleons, M:mass, E:khi"));
-#else
-	os_draw_string_small_(0,200,gettext("OK: tout, P:protons, N:nucleons, M:mass, E:khi"));
-#endif
-	for(int i = 0; i < ATOM_NUMS; i++) {
-	  drawAtom(i);
-	}
-	if (atomsdefs[cursor_pos].y >= 7) {
-	  stroke_rectangle(6 + atomsdefs[cursor_pos].x * 17, 15 + atomsdefs[cursor_pos].y * 17, 18, 18, 0x000000);
-	  stroke_rectangle(7 + atomsdefs[cursor_pos].x * 17, 16 + atomsdefs[cursor_pos].y * 17, 16, 16, 0x000000);
-	} else {
-	  stroke_rectangle(6 + atomsdefs[cursor_pos].x * 17, 6 + atomsdefs[cursor_pos].y * 17, 18, 18, 0x000000);
-	  stroke_rectangle(7 + atomsdefs[cursor_pos].x * 17, 7 + atomsdefs[cursor_pos].y * 17, 16, 16, 0x000000);
-	}
-  
-	drawRectangle(48,  99, 2, 61,rgb24to16(0x525552));
-	drawRectangle(48, 141, 9,  2, rgb24to16(0x525552));
-	drawRectangle(48, 158, 9,  2, rgb24to16(0x525552));
-
+	using namespace kui;
+	(void)partial_draw;
+	fill(0,18,320,198,SURFACE);
+	for(int i = 0; i < ATOM_NUMS; i++) drawAtom(i,i==cursor_pos);
+	// liaison vers les lanthanides / actinides
+	vline(6+2*17+8,18+6+5*17+16,7*17+15-5*17-16+8,BORDER_STRONG);
 	int prot=atomsdefs[cursor_pos].num;
 	sprint_int(protons,prot);
 	int nuc=atomsdefs[cursor_pos].neutrons+atomsdefs[cursor_pos].num;
 	sprint_int(nucleons,nuc);
-	
 	symbol=atomsdefs[cursor_pos].symbol;
-	os_draw_string_(73,23,symbol);
 	name=atomsdefs[cursor_pos].name;
-	os_draw_string_small_(110,27,gettext(name));
-	os_draw_string_small_(50,18,nucleons);
-	os_draw_string_small_(50,31,protons);
 	strcpy(mass,"M:");
 	strcpy(electroneg,"khi:");
 	sprint_double(mass+2,atomsdefs[cursor_pos].mass);
-	os_draw_string_small_(0,186,mass);
 	sprint_double(electroneg+4,atomsdefs[cursor_pos].electroneg);
-	os_draw_string_small_(160,186,electroneg);
+	// carte de l'élément, dans l'espace libre en haut du tableau
+	{
+	  int cx=6+2*17, cy=18+4, cw=10*17, ch=3*17-2;
+	  uint16_t fc=katom_color(atomsdefs[cursor_pos].type);
+	  box(cx,cy,cw,ch,8,SURFACE,BORDER_STRONG,SURFACE);
+	  box(cx+5,cy+5,38,38,6,fc,fc,SURFACE);
+	  text(cx+8,cy+6,protons,kf_ui_9sb,TEXT2,fc);
+	  int sw=width(symbol,kf_ui_13sb);
+	  text(cx+5+(38-sw)/2,cy+20,symbol,kf_ui_13sb,TEXT,fc);
+	  int tx=cx+50;
+	  text_clip(tx,cy+4,gettext(name),kf_ui_12m,TEXT,SURFACE,cx+cw-4);
+	  string l2=string("Z ")+protons+"  ·  A "+nucleons;
+	  text(tx,cy+21,l2.c_str(),kf_ui_10,TEXT2,SURFACE);
+	  string ms(mass+2), en(electroneg+4);
+	  for (size_t q=0;q<ms.size();q++) if (ms[q]=='.') ms[q]=',';
+	  for (size_t q=0;q<en.size();q++) if (en[q]=='.') en[q]=',';
+	  string l3="M "+ms+(atomsdefs[cursor_pos].electroneg>=0?"  ·  χ "+en:"");
+	  text_clip(tx,cy+34,l3.c_str(),kf_ui_10,TEXT2,SURFACE,cx+cw-4);
+	}
+	// touches pour insérer une seule valeur
+	{
+	  static const char * const kk[5]={"5","(","8","7",","};
+	  static const char * const kl[5]={"Symbole","Z","A","Masse","χ"};
+	  int x=8, y=18+194-16;
+	  for (int i=0;i<5;i++){ x=keycap(x,y,kk[i],KEY_PLAIN,SURFACE)+3; x=text(x,y,kl[i],kf_ui_10,TEXT2,SURFACE)+10; }
+	}
+	{
+	  static const char * const hk[4]={"OK","↑↓←→",0,"Back"};
+	  static const char * const hl[4]={"Tout insérer","Élément",0,"Fermer"};
+	  static const KeyType ht[4]={KEY_PRIMARY,KEY_PLAIN,KEY_PLAIN,KEY_PLAIN};
+	  hints(hk,hl,ht);
+	}
+	status_mode(lang==1?"Table périodique":"Periodic table");
       }
       redraw=false;
       int key;
