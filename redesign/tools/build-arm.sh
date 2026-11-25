@@ -54,6 +54,8 @@ arm-none-eabi-gcc $APPCF -c "$S/libc_stubs.c" -o "$S/libc_stubs.o" >> "$LOG/app.
 arm-none-eabi-gcc "$S/main.o" "$S/libc_stubs.o" "$S/lib/libgiac.a" "$S/lib/libmpfi.a" "$S/lib/libmpfr.a" "$S/lib/libgmp.a" "$S/lib/libmicropy.a" \
   -o "$K/app.elf" $APPCF -Wl,-L"$EXT/api" -Wl,--gc-sections -Wl,--entry=entrypoint --specs=nano.specs -nostartfiles -Wl,-Ur \
   -lc -lstdc++ -lm -lapi -lnosys >> "$LOG/app.log" 2>&1
+# retire symboles et infos de débogage inutiles (27 Mo → 12 Mo), sans changer le binaire installé
+arm-none-eabi-strip --strip-unneeded "$K/app.elf"
 if arm-none-eabi-nm -u "$K/app.elf" | grep " U " | grep -vqE "_section_|exidx|init_array"; then
   echo "symboles non résolus :"; arm-none-eabi-nm -u "$K/app.elf" | grep " U " | grep -vE "_section_|exidx|init_array"; exit 1
 fi
