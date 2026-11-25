@@ -48,3 +48,4 @@ apps/Video/libjpeg-turbo/build
 **/aclocal.m4
 .cache
 apps/KhiCAS/src/giac-1.6.0/src/simu/
+apps/KhiCAS/app-reloc.elf

@@ -60,11 +60,24 @@ if arm-none-eabi-nm -u "$K/app.elf" | grep " U " | grep -vqE "_section_|exidx|in
   echo "symboles non résolus :"; arm-none-eabi-nm -u "$K/app.elf" | grep " U " | grep -vE "_section_|exidx|init_array"; exit 1
 fi
 
+step "app.elf pré-placé (< 6 Mo)"
+# L'installeur web relie app.elf à l'adresse de sa position dans l'archive ; KhiCAS y est
+# toujours en premier (index.js). On le relie donc nous-mêmes à la position 0, puis on
+# emballe le binaire dans un ELF minimal sans relocations : 5,3 Mo au lieu de 12.
+cp "$K/app.elf" "$K/app-reloc.elf"
+sed "s/+ (0)/+ (0)/" "$EXT/apps/external.ld" > "$LOG/t0.ld"
+arm-none-eabi-ld "$K/app-reloc.elf" -o "$LOG/pos0.elf" -T"$LOG/t0.ld" >> "$LOG/app.log" 2>&1
+arm-none-eabi-objcopy -O binary "$LOG/pos0.elf" "$LOG/KhiCAS.bin"
+( cd "$LOG" && arm-none-eabi-objcopy -I binary -O elf32-littlearm -B arm \
+    --rename-section .data=.entrypoint,alloc,load,readonly,contents,code KhiCAS.bin pre.elf && arm-none-eabi-strip --strip-all pre.elf )
+cp "$LOG/pre.elf" "$K/app.elf"
+ls -la "$K/app.elf"
+
 step "apps.tar"
 ( cd "$EXT" && ./tool/archive "$ROOT/apps.tar" KhiCAS ) >> "$LOG/app.log" 2>&1
 # contrôle de la RAM statique (limite 16 Ko pour une app externe)
 sed "s/+ (0)/+ (0)/" "$EXT/apps/external.ld" > "$LOG/t.ld"
-arm-none-eabi-ld "$K/app.elf" -o "$LOG/linked.elf" -T"$LOG/t.ld" 2>/dev/null
+arm-none-eabi-ld "$K/app-reloc.elf" -o "$LOG/linked.elf" -T"$LOG/t.ld" 2>/dev/null
 RAM=$(arm-none-eabi-size -A "$LOG/linked.elf" | awk '$1==".data"||$1==".bss"{s+=$2} END{print s}')
 echo "RAM statique : $RAM / 16384 octets"
 [ "$RAM" -lt 16384 ] || { echo "ERREUR : RAM statique dépassée"; exit 1; }

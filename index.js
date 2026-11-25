@@ -292,6 +292,9 @@ angular.module('nwas', ['ngSanitize', 'pascalprecht.translate']).controller('mai
     } else {
       let linkerScript = await loadLinkerScript();
       let address = 0;
+      // KhiCAS est livré pré-placé à l'adresse de la première position (app.elf < 6 Mo,
+      // sans relocations) : il doit toujours être traité en premier.
+      applications = applications.slice().sort((a, b) => (b.name === "KhiCAS") - (a.name === "KhiCAS"));
       let tar = new tarball.TarWriter();
 
       for(let i = 0; i < applications.length; i++) {
